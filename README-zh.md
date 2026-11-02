@@ -88,6 +88,12 @@ tg-media-archiver --workdir ./data run
 
 工作流使用仓库自带的 `GITHUB_TOKEN`，无需额外配置仓库密码。
 
+### 验证与依赖更新
+
+[`Validate` 工作流](.github/workflows/validate.yml) 在 Python 3.10、3.11 和 3.12 上构建并安装 Python 包，离线验证模块导入、命令行、配置、资源文件、加解密、文件发布、去重和持久队列恢复。
+
+[Renovate](renovate.json) 更新依赖，包括主版本、GitHub Actions 和 Pyrogram 分支；Python 运行时版本保持不变。依赖 PR 在必需的 Docker 构建与 Python 验证均通过后自动合并。
+
 ## 快速开始
 
 1. 完成 `configure`，按需编辑代理配置，然后执行 `login`。默认将文件保存到工作目录的 `downloads/`，并按 `年_月` 建立子目录。
@@ -130,7 +136,8 @@ tg-media-archiver/
 │   ├── module/             # 机器人、队列、去重、进度面板
 │   └── utils/              # 文件与日志工具
 ├── .doc/                 # 品牌图片与 TrueNAS 部署示例
-├── .github/workflows/    # Docker 自动构建与发布
+├── .github/scripts/      # Python 离线验证
+├── .github/workflows/    # 验证、Docker 构建与发布
 ├── config.example.yaml
 ├── Dockerfile
 ├── compose.yaml

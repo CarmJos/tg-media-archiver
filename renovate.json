@@ -2,5 +2,38 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "automerge": true,
+  "automergeType": "pr",
+  "platformAutomerge": false,
+  "ignoreTests": false,
+  "dependencyDashboardApproval": false,
+  "rebaseWhen": "behind-base-branch",
+  "packageRules": [
+    {
+      "description": "Keep the Docker Python runtime unchanged.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["python"],
+      "enabled": false
+    },
+    {
+      "description": "Keep the validation Python versions unchanged.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["python"],
+      "enabled": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^pyproject\\.toml$/"],
+      "matchStrings": [
+        "Pyrogram @ https://github\\.com/tangyoha/pyrogram/archive/(?<currentDigest>[a-f0-9]{40})\\.zip"
+      ],
+      "currentValueTemplate": "patch",
+      "depNameTemplate": "Pyrogram",
+      "packageNameTemplate": "https://github.com/tangyoha/pyrogram",
+      "datasourceTemplate": "git-refs"
+    }
   ]
 }

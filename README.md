@@ -88,6 +88,12 @@ The [`Docker` workflow](.github/workflows/docker.yml) publishes `linux/amd64` an
 
 Publishing uses the repository's built-in `GITHUB_TOKEN`; no additional registry password is needed.
 
+### Validation and dependency updates
+
+The [`Validate` workflow](.github/workflows/validate.yml) builds and installs the Python package on Python 3.10, 3.11, and 3.12. Offline checks cover imports, CLI commands, configuration, packaged resources, encryption, file publishing, deduplication, and persistent queue recovery.
+
+[Renovate](renovate.json) updates dependencies, including major versions, GitHub Actions, and the Pyrogram fork. Python runtime versions remain unchanged. Dependency PRs merge automatically after the required Docker build and Python validation checks pass.
+
 ## Quick Start
 
 1. Run `configure`, edit the proxy if needed, then run `login`. Files are saved under the working directory's `downloads/` by default, grouped into `year_month` folders.
@@ -130,7 +136,8 @@ tg-media-archiver/
 │   ├── module/             # Bot, queue, deduplication, progress panel
 │   └── utils/              # File and logging utilities
 ├── .doc/                 # Branding assets and TrueNAS deployment examples
-├── .github/workflows/    # Automated Docker builds and publishing
+├── .github/scripts/      # Offline Python validation
+├── .github/workflows/    # Validation, Docker builds and publishing
 ├── config.example.yaml
 ├── Dockerfile
 ├── compose.yaml
