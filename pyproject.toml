@@ -39,7 +39,7 @@ dependencies = [
   "Flask==2.2.2",
   "ply==3.11",
   "ruamel.yaml==0.17.21",
-  "Flask-Login==0.6.2",
+  "Flask-Login==0.6.3",
   "pycryptodome==3.19.1",
   "requests==2.32.3",
 ]
