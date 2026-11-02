@@ -35,7 +35,7 @@ dependencies = [
   "Pyrogram @ https://github.com/tangyoha/pyrogram/archive/51a100c5e2745471ee89c1dd96dd69962973108b.zip",
   "rich==12.5.1",
   "loguru==0.6.0",
-  "Werkzeug==2.2.2",
+  "Werkzeug==3.1.9",
   "Flask==2.2.2",
   "ply==3.11",
   "ruamel.yaml==0.17.21",
