@@ -31,7 +31,7 @@ TG Media Archiver saves photos, videos, and documents forwarded by an authorized
 
 ### Docker Compose
 
-Images are available from GHCR for `linux/amd64` and `linux/arm64`. The example uses release `1.0.0`; use `latest` to follow the latest stable release.
+Images are available from GHCR for `linux/amd64` and `linux/arm64`. The example uses release `1.1.0`; use `latest` to follow the latest stable release.
 
 Download [`compose.yaml`](compose.yaml) into your deployment directory:
 
@@ -41,7 +41,7 @@ cd tg-media-archiver
 curl -fsSL https://raw.githubusercontent.com/CarmJos/tg-media-archiver/master/compose.yaml -o compose.yaml
 ```
 
-The service uses `image: ghcr.io/carmjos/tg-media-archiver:1.0.0`. Pull the image and configure the bot:
+The service uses `image: ghcr.io/carmjos/tg-media-archiver:1.1.0`. Pull the image and configure the bot:
 
 ```sh
 docker compose pull
@@ -86,7 +86,7 @@ tg-media-archiver --workdir ./data run
 
 ### Automated Docker builds
 
-The [`Docker` workflow](.github/workflows/docker.yml) publishes `linux/amd64` and `linux/arm64` images to `ghcr.io/carmjos/tg-media-archiver` only when a GitHub Release is published. Release `v1.0.0` produces the `v1.0.0`, `1.0.0`, and commit SHA image tags. Stable releases also update `latest`; prereleases leave it unchanged. Pushes to `main` or `master`, pull requests, and manual workflow runs only validate the build.
+The [`Docker` workflow](.github/workflows/docker.yml) publishes `linux/amd64` and `linux/arm64` images to `ghcr.io/carmjos/tg-media-archiver` only when a GitHub Release is published. Release `v1.1.0` produces the `v1.1.0`, `1.1.0`, and commit SHA image tags. Stable releases also update `latest`; prereleases leave it unchanged. Pushes to `main` or `master`, pull requests, and manual workflow runs only validate the build.
 
 Publishing uses the repository's built-in `GITHUB_TOKEN`; no additional registry password is needed.
 
