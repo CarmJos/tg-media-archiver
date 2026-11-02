@@ -20,7 +20,7 @@ TG Media Archiver builds on [telegram_media_downloader](https://github.com/tangy
 
 ## Features
 
-- **Private, authorized intake** — Only forwarded media from configured Telegram user IDs in the bot's private chat is accepted. Automatic group downloads can be disabled.
+- **Private, authorized intake** — Only forwarded media from the signed-in owner in the bot's private chat is accepted.
 - **Persistent queue** — Unfinished jobs are stored in SQLite and recovered after a restart. An interrupted file starts downloading again from the beginning.
 - **Two-stage deduplication** — Check Telegram media identity before transfer, then compare SHA-256 after download. A duplicate is skipped only when its local file still exists and verifies. Identical content with a different Telegram identity must be downloaded before its hash can be compared.
 - **On-demand progress** — `/progress` shows queued jobs, active files, transferred bytes, and speed. While open, the panel moves below new private-chat messages.
@@ -55,7 +55,7 @@ docker compose run --rm archiver login
 docker compose up -d
 ```
 
-`login` signs into a Telegram user account and makes it the sole authorized user. The example Compose mounts `./data` at `/app` and `./downloads` at `/app/downloads`. See the [TrueNAS guide](.doc/TrueNAS.md) for installing the GHCR image as a Custom App.
+`login` uses a personal Telegram account to identify the sole authorized user and authorizes the bot session. The running archiver listens through the bot session. The example Compose mounts `./data` at `/app` and `./downloads` at `/app/downloads`. See the [TrueNAS guide](.doc/TrueNAS.md) for installing the GHCR image as a Custom App.
 
 To upgrade, change the image tag in `compose.yaml` to the desired release, then run:
 
@@ -63,6 +63,8 @@ To upgrade, change the image tag in `compose.yaml` to the desired release, then 
 docker compose pull
 docker compose up -d
 ```
+
+Existing deployments can keep their `config.yaml`, `sessions/`, and download directory with `files.db`. The archiver reads the settings it still uses and recovers unfinished queue entries; removed Web, group-download, and cloud-upload settings are ignored. Interrupted file transfers restart from the beginning.
 
 ### Local Python
 
@@ -90,7 +92,7 @@ Publishing uses the repository's built-in `GITHUB_TOKEN`; no additional registry
 
 ### Validation and dependency updates
 
-The [`Validate` workflow](.github/workflows/validate.yml) builds and installs the Python package on Python 3.10, 3.11, and 3.12. Offline checks cover imports, CLI commands, configuration, packaged resources, encryption, file publishing, deduplication, and persistent queue recovery.
+The [`Validate` workflow](.github/workflows/validate.yml) builds and installs the Python package on Python 3.10, 3.11, and 3.12. Offline checks cover imports, CLI commands, configuration, packaged resources, file publishing, deduplication, and persistent queue recovery.
 
 [Renovate](renovate.json) updates dependencies, including major versions, GitHub Actions, and the Pyrogram fork. Python runtime versions remain unchanged. Dependency PRs merge automatically after the required Docker build and Python validation checks pass.
 
@@ -110,11 +112,11 @@ See [`config.example.yaml`](config.example.yaml) for an example. The runtime con
 | `allowed_user_ids` | Authorized numeric Telegram user IDs; `login` fills in the signed-in account |
 | `save_path` | Archive root; `files.db` is stored alongside the downloads |
 | `file_path_prefix`, `date_format` | Subdirectory layout; default month format is `%Y_%m` |
+| `file_name_prefix`, `file_name_prefix_split` | Saved file naming |
 | `media_types`, `file_formats` | Media type and format settings |
 | `proxy` | Proxy used by the Telegram clients |
 | `max_download_task`, `max_concurrent_transmissions` | Worker count and simultaneous Telegram transmissions |
-| `chat` | Group/channel history download configuration; `[]` disables it |
-| `web_enabled` | Enables the Web service; defaults to `false` |
+| `start_timeout`, `log_level` | Connection timeout and logging level |
 
 ## Bot Commands
 
@@ -147,7 +149,7 @@ tg-media-archiver/
 
 ## Open Source License
 
-This project is licensed under [MIT](LICENSE). It derives from [MIT-licensed telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE) and bundles [MIT-licensed CryptoJS](https://github.com/brix/crypto-js/blob/4.2.0/LICENSE). Original copyright notices remain in this project's license and the bundled component source.
+This project is licensed under [MIT](LICENSE) and derives from [MIT-licensed telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE). Original author notices remain in this project's license.
 
 ## Legal Notice and Disclaimer
 

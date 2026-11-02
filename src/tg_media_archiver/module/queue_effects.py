@@ -6,7 +6,6 @@ import time
 
 from pyrogram import raw
 
-
 logger = logging.getLogger(__name__)
 COMPLETION_TEXT = "队列内所有视频均已完成下载。"
 

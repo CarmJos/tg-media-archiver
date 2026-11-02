@@ -1,10 +1,10 @@
 """Publish complete media with the destination share's inherited ACL."""
 
 import os
-from pathlib import Path
 import shutil
 import stat
 import uuid
+from pathlib import Path
 
 
 def publish_download(source, destination, share_root):
@@ -51,9 +51,9 @@ def publish_download(source, destination, share_root):
                     after.st_size,
                     after.st_mtime_ns,
                 ):
-                    raise IOError("Download source changed while publishing")
+                    raise OSError("Download source changed while publishing")
                 if os.fstat(output.fileno()).st_size != before.st_size:
-                    raise IOError("Published download has the wrong size")
+                    raise OSError("Published download has the wrong size")
             # The destination inode inherits the share ACL; link prevents overwrite.
             os.link(staging, target, follow_symlinks=False)
             if os.name == "posix":
