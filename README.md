@@ -67,7 +67,7 @@ tg-media-archiver --workdir ./data run
 
 ### Automated Docker builds
 
-The [`Docker` workflow](.github/workflows/docker.yml) builds `linux/amd64` and `linux/arm64` images on pushes to `main`, `master`, or `v*` tags, then publishes them to `ghcr.io/<repository-owner>/tg-media-archiver`. The default branch provides `latest`; version tags produce matching image versions. Pull requests build for validation. You can also run the workflow manually in GitHub Actions.
+The [`Docker` workflow](.github/workflows/docker.yml) publishes `linux/amd64` and `linux/arm64` images to `ghcr.io/<repository-owner>/tg-media-archiver` only when a GitHub Release is published. Release `v1.0.0` produces the `v1.0.0`, `1.0.0`, and commit SHA image tags. Stable releases also update `latest`; prereleases leave it unchanged. Pushes to `main` or `master`, pull requests, and manual workflow runs only validate the build.
 
 Publishing uses the repository's built-in `GITHUB_TOKEN`; no additional registry password is needed.
 

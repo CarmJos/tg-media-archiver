@@ -3,9 +3,10 @@ name: Docker
 on:
   push:
     branches: [main, master]
-    tags: ["v*"]
   pull_request:
     branches: [main, master]
+  release:
+    types: [published]
   workflow_dispatch:
 
 concurrency:
@@ -14,7 +15,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.event_name == 'pull_request'
+    if: github.event_name != 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,7 +34,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   publish:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,11 +59,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.IMAGE_NAME }}
+          flavor: latest=false
           tags: |
-            type=ref,event=branch
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
       - name: Build and publish image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:

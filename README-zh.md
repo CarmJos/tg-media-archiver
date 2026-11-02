@@ -67,7 +67,7 @@ tg-media-archiver --workdir ./data run
 
 ### 自动构建 Docker 镜像
 
-[`Docker` 工作流](.github/workflows/docker.yml) 在推送 `main`、`master` 或 `v*` 标签时构建 `linux/amd64` 和 `linux/arm64` 镜像，并发布到 `ghcr.io/<仓库所有者>/tg-media-archiver`。默认分支提供 `latest` 标签，版本标签生成对应版本号。PR 仅验证构建，也可在 GitHub Actions 中手动运行。
+[`Docker` 工作流](.github/workflows/docker.yml) 仅在 GitHub Release 发布时构建并推送 `linux/amd64` 和 `linux/arm64` 镜像到 `ghcr.io/<仓库所有者>/tg-media-archiver`。Release `v1.0.0` 会生成 `v1.0.0`、`1.0.0` 和提交 SHA 镜像标签；正式版同时更新 `latest`，预发布版保持 `latest` 不变。推送 `main`、`master`，提交 PR 或手动运行工作流时，仅验证构建。
 
 工作流使用仓库自带的 `GITHUB_TOKEN`，无需额外配置仓库密码。
 
