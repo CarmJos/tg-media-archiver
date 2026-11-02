@@ -16,7 +16,7 @@ README LANGUAGES [ [**English**](README.md) | [简体中文](README-zh.md) ]
 
 _**Archive Telegram media forwarded to your bot on your own storage.**_
 
-TG Media Archiver builds on [telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader). An authorized user forwards photos, videos, or documents in a private chat with the bot. Each media item, including each item in a mixed album, enters a download queue and is saved to a configured directory.
+TG Media Archiver saves photos, videos, and documents forwarded by an authorized user in a private chat with the bot. Each media item, including each item in a mixed album, enters a download queue and is saved to a configured directory.
 
 ## Features
 
@@ -149,7 +149,7 @@ tg-media-archiver/
 
 ## Open Source License
 
-This project is licensed under [MIT](LICENSE) and derives from [MIT-licensed telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE). Original author notices remain in this project's license.
+This project is licensed under [MIT](LICENSE).
 
 ## Legal Notice and Disclaimer
 

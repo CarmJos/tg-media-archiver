@@ -16,7 +16,7 @@ README 语言版本 [ [English](README.md) | [**简体中文**](README-zh.md) ]
 
 _**将转发给机器人的 Telegram 媒体归档到自己的存储空间。**_
 
-TG Media Archiver 基于 [telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader)。授权用户在机器人私聊中转发图片、视频或文件，程序会将其保存到指定目录；混合相册中的每项媒体分别进入下载队列。
+TG Media Archiver 将授权用户在机器人私聊中转发的图片、视频或文件保存到指定目录；混合相册中的每项媒体分别进入下载队列。
 
 ## 功能特性
 
@@ -149,7 +149,7 @@ tg-media-archiver/
 
 ## 开源许可
 
-本项目采用 [MIT 许可证](LICENSE)，基于 [telegram_media_downloader 的 MIT 许可](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE) 开发。原作者版权署名保留在本项目许可证中。
+本项目采用 [MIT 许可证](LICENSE)。
 
 ## 法律声明与免责声明
 
