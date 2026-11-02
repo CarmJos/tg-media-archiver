@@ -1,6 +1,6 @@
 services:
   archiver:
-    image: tg-media-archiver:local
+    image: ghcr.io/carmjos/tg-media-archiver:1.0.0
     restart: unless-stopped
     init: true
     stop_grace_period: 30s

@@ -31,10 +31,20 @@ TG Media Archiver 基于 [telegram_media_downloader](https://github.com/tangyoha
 
 ### Docker Compose
 
-在项目目录执行：
+GHCR 提供 `linux/amd64` 和 `linux/arm64` 镜像。示例使用正式版 `1.0.0`；也可将标签改为 `latest`，跟随最新正式版。
+
+将 [`compose.yaml`](compose.yaml) 下载到部署目录：
 
 ```sh
-docker compose build
+mkdir -p tg-media-archiver
+cd tg-media-archiver
+curl -fsSL https://raw.githubusercontent.com/CarmJos/tg-media-archiver/master/compose.yaml -o compose.yaml
+```
+
+服务使用 `image: ghcr.io/carmjos/tg-media-archiver:1.0.0`。拉取镜像并配置机器人：
+
+```sh
+docker compose pull
 docker compose run --rm archiver configure
 ```
 
@@ -45,7 +55,14 @@ docker compose run --rm archiver login
 docker compose up -d
 ```
 
-`login` 会登录 Telegram 用户账号，并将该账号设为唯一授权用户。示例 Compose 将 `./data` 挂载到容器 `/app`，将 `./downloads` 挂载到 `/app/downloads`。TrueNAS 的镜像构建与 Custom App YAML 见 [部署说明](.doc/TrueNAS.md)。
+`login` 会登录 Telegram 用户账号，并将该账号设为唯一授权用户。示例 Compose 将 `./data` 挂载到容器 `/app`，将 `./downloads` 挂载到 `/app/downloads`。在 TrueNAS 中通过 GHCR 镜像安装 Custom App 的步骤见 [部署说明](.doc/TrueNAS.md)。
+
+升级时，将 `compose.yaml` 中的镜像标签改为目标版本，再执行：
+
+```sh
+docker compose pull
+docker compose up -d
+```
 
 ### 本地 Python
 
@@ -67,7 +84,7 @@ tg-media-archiver --workdir ./data run
 
 ### 自动构建 Docker 镜像
 
-[`Docker` 工作流](.github/workflows/docker.yml) 仅在 GitHub Release 发布时构建并推送 `linux/amd64` 和 `linux/arm64` 镜像到 `ghcr.io/<仓库所有者>/tg-media-archiver`。Release `v1.0.0` 会生成 `v1.0.0`、`1.0.0` 和提交 SHA 镜像标签；正式版同时更新 `latest`，预发布版保持 `latest` 不变。推送 `main`、`master`，提交 PR 或手动运行工作流时，仅验证构建。
+[`Docker` 工作流](.github/workflows/docker.yml) 仅在 GitHub Release 发布时构建并推送 `linux/amd64` 和 `linux/arm64` 镜像到 `ghcr.io/carmjos/tg-media-archiver`。Release `v1.0.0` 会生成 `v1.0.0`、`1.0.0` 和提交 SHA 镜像标签；正式版同时更新 `latest`，预发布版保持 `latest` 不变。推送 `main`、`master`，提交 PR 或手动运行工作流时，仅验证构建。
 
 工作流使用仓库自带的 `GITHUB_TOKEN`，无需额外配置仓库密码。
 

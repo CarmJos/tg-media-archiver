@@ -31,10 +31,20 @@ TG Media Archiver builds on [telegram_media_downloader](https://github.com/tangy
 
 ### Docker Compose
 
-From the project directory:
+Images are available from GHCR for `linux/amd64` and `linux/arm64`. The example uses release `1.0.0`; use `latest` to follow the latest stable release.
+
+Download [`compose.yaml`](compose.yaml) into your deployment directory:
 
 ```sh
-docker compose build
+mkdir -p tg-media-archiver
+cd tg-media-archiver
+curl -fsSL https://raw.githubusercontent.com/CarmJos/tg-media-archiver/master/compose.yaml -o compose.yaml
+```
+
+The service uses `image: ghcr.io/carmjos/tg-media-archiver:1.0.0`. Pull the image and configure the bot:
+
+```sh
+docker compose pull
 docker compose run --rm archiver configure
 ```
 
@@ -45,7 +55,14 @@ docker compose run --rm archiver login
 docker compose up -d
 ```
 
-`login` signs into a Telegram user account and makes it the sole authorized user. The example Compose mounts `./data` at `/app` and `./downloads` at `/app/downloads`. See the [TrueNAS guide](.doc/TrueNAS.md) for building the image and installing the Custom App.
+`login` signs into a Telegram user account and makes it the sole authorized user. The example Compose mounts `./data` at `/app` and `./downloads` at `/app/downloads`. See the [TrueNAS guide](.doc/TrueNAS.md) for installing the GHCR image as a Custom App.
+
+To upgrade, change the image tag in `compose.yaml` to the desired release, then run:
+
+```sh
+docker compose pull
+docker compose up -d
+```
 
 ### Local Python
 
@@ -67,7 +84,7 @@ tg-media-archiver --workdir ./data run
 
 ### Automated Docker builds
 
-The [`Docker` workflow](.github/workflows/docker.yml) publishes `linux/amd64` and `linux/arm64` images to `ghcr.io/<repository-owner>/tg-media-archiver` only when a GitHub Release is published. Release `v1.0.0` produces the `v1.0.0`, `1.0.0`, and commit SHA image tags. Stable releases also update `latest`; prereleases leave it unchanged. Pushes to `main` or `master`, pull requests, and manual workflow runs only validate the build.
+The [`Docker` workflow](.github/workflows/docker.yml) publishes `linux/amd64` and `linux/arm64` images to `ghcr.io/carmjos/tg-media-archiver` only when a GitHub Release is published. Release `v1.0.0` produces the `v1.0.0`, `1.0.0`, and commit SHA image tags. Stable releases also update `latest`; prereleases leave it unchanged. Pushes to `main` or `master`, pull requests, and manual workflow runs only validate the build.
 
 Publishing uses the repository's built-in `GITHUB_TOKEN`; no additional registry password is needed.
 
