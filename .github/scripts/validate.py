@@ -1,13 +1,15 @@
 """Offline smoke checks for an installed tg-media-archiver wheel."""
 
 import asyncio
-from importlib import import_module, metadata, resources
 import os
-from pathlib import Path
 import pkgutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from importlib import import_module, metadata, resources
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -26,12 +28,6 @@ def check_installation():
 
     sample = resources.files(package).joinpath("config.example.yaml")
     assert sample.is_file(), "Packaged sample configuration is missing"
-    from tg_media_archiver.module.web import get_flask_app
-
-    web = get_flask_app()
-    for template in ("index.html", "login.html"):
-        web.jinja_env.get_template(template)
-    assert Path(web.static_folder, "layui", "layui.js").is_file()
 
     for argument, expected in (
         ("--help", "configure"),
@@ -56,12 +52,15 @@ def check_installation():
     assert encrypted != payload
     assert tgcrypto.ige256_decrypt(encrypted, key, iv) == payload
 
-    print(f"Installed wheel {metadata.version('tg-media-archiver')}: "
-          f"{len(modules)} modules, CLI, resources and encryption passed")
+    print(
+        f"Installed wheel {metadata.version('tg-media-archiver')}: "
+        f"{len(modules)} modules, CLI, sample config and encryption passed"
+    )
 
 
 def check_configuration():
     from ruamel.yaml import YAML
+
     from tg_media_archiver.configure import configure
     from tg_media_archiver.module.app import Application
 
@@ -74,15 +73,14 @@ def check_configuration():
     assert config["bot_token"] == credentials[2]
     assert config["allowed_user_ids"] == []
 
-    app = Application("config.yaml", "data.yaml", "offline-validation")
-    try:
-        app.load_config()
-        assert app.web_enabled is False
-        assert not app.chat_download_config
-        assert app.max_concurrent_transmissions == 2
-    finally:
-        app.loop.close()
-        app.executor.shutdown(wait=True)
+    config["allowed_user_ids"] = [1]
+    with Path("config.yaml").open("w", encoding="utf-8") as stream:
+        YAML().dump(config, stream)
+    app = Application("config.yaml")
+    app.load_config()
+    assert app.allowed_user_ids == [1]
+    assert app.max_download_task == 3
+    assert app.max_concurrent_transmissions == 2
     print("Hidden configuration and offline loading passed")
 
 
@@ -131,7 +129,400 @@ async def check_storage(directory):
     assert len(cleanup) == 1
     await restarted.ack_cleanup(1, 10)
     assert not await restarted.list_cleanup(1)
+
+    legacy = directory / "legacy"
+    legacy.mkdir()
+    legacy_db = legacy / "files.db"
+    with sqlite3.connect(legacy_db) as connection:
+        connection.execute(
+            "CREATE TABLE pending_downloads (chat_id INTEGER, message_id INTEGER, "
+            "user_id INTEGER, state TEXT, attempts INTEGER, "
+            "last_error_type TEXT, updated_at REAL, "
+            "PRIMARY KEY(chat_id, message_id))"
+        )
+        connection.execute(
+            "INSERT INTO pending_downloads VALUES (1,70,1,'running',2,NULL,1)"
+        )
+    legacy_queue = PersistentQueue(legacy_db)
+    assert await legacy_queue.initialize_lifecycle(1) == 1
+    migrated = await legacy_queue.list_pending(recover_running=True)
+    assert len(migrated) == 1 and migrated[0]["message_id"] == 70
+    assert migrated[0]["state"] == "queued" and migrated[0]["attempts"] == 2
+    assert await legacy_queue.mark_running(1, 70)
+    assert await legacy_queue.mark_done(1, 70)
+    assert (await legacy_queue.list_cleanup(1))[0]["message_id"] == 70
     print("File publishing, deduplication, queue recovery and cleanup passed")
+
+
+async def check_private_intake(directory):
+    from datetime import datetime, timezone
+
+    from pyrogram.enums import ChatType, MessageMediaType
+
+    from tg_media_archiver.module.app import Application
+    from tg_media_archiver.module.bot import DownloadBot, _is_authorized_forward
+
+    app = Application("config.yaml")
+    app.load_config()
+    app.save_path = str(directory / "intake-downloads")
+    app.pre_run()
+    accepted = []
+
+    async def enqueue(message, node):
+        accepted.append((message, node))
+
+    bot = DownloadBot(app, enqueue)
+    bot.client = FakeTelegram()
+
+    def forwarded(message_id, media_type, album=None):
+        kind = MessageMediaType(media_type)
+        item = SimpleNamespace(
+            file_name=f"item-{message_id}.{'mp4' if media_type == 'video' else 'jpg'}",
+            file_unique_id=f"unique-{message_id}",
+            file_size=12,
+        )
+        message = SimpleNamespace(
+            id=message_id,
+            from_user=SimpleNamespace(id=1),
+            chat=SimpleNamespace(id=1, type=ChatType.PRIVATE),
+            forward_date=datetime.now(timezone.utc),
+            media=kind,
+            media_group_id=album,
+            caption=None,
+        )
+        setattr(message, media_type, item)
+        return message
+
+    photo = forwarded(30, "photo")
+    video = forwarded(31, "video")
+    album = [forwarded(32, "photo", "album-1"), forwarded(33, "video", "album-1")]
+    for message in [photo, video, *album]:
+        assert _is_authorized_forward(message, 1)
+        assert await bot._enqueue_message(message)
+    assert not await bot._enqueue_message(photo)
+    assert len(accepted) == 4
+    assert len(await bot.persistent_queue.list_pending(recover_running=False)) == 4
+
+    other_user = forwarded(34, "photo")
+    other_user.from_user.id = 2
+    group = forwarded(35, "video")
+    group.chat.type = ChatType.SUPERGROUP
+    unforwarded = forwarded(36, "photo")
+    unforwarded.forward_date = None
+    for rejected in (other_user, group, unforwarded):
+        assert not _is_authorized_forward(rejected, 1)
+        assert not await bot._enqueue_message(rejected)
+    assert len(accepted) == 4
+
+    startup_app = Application("config.yaml")
+    startup_app.load_config()
+    startup_app.save_path = str(directory / "startup-downloads")
+    startup_app.pre_run()
+    startup_accepted = []
+
+    async def startup_enqueue(message, _node):
+        startup_accepted.append(message.id)
+
+    startup_bot = DownloadBot(startup_app, startup_enqueue)
+    startup_bot.client = FakeTelegram()
+    early = forwarded(37, "video")
+    startup_bot.client.messages[early.id] = early
+    await startup_bot._on_forward(startup_bot.client, early)
+    assert not startup_accepted and len(startup_bot._startup_buffer) == 1
+    before_ready = await startup_bot.persistent_queue.list_pending(
+        recover_running=False
+    )
+    assert [row["message_id"] for row in before_ready] == [37]
+    await startup_bot._recover_pending()
+    for buffered in startup_bot._startup_buffer:
+        await startup_bot._enqueue_message(buffered, recovered=True)
+    assert startup_accepted == [37]
+    print("Private owner-only photo, video and mixed-album intake passed")
+
+
+class FakeTelegram:
+    """Small local stand-in for the messages used by progress and cleanup."""
+
+    def __init__(self, owner_id=1):
+        self.owner_id = owner_id
+        self.next_id = 100
+        self.messages = {}
+        self.deleted = []
+        self.invoked = []
+        self.downloaded = []
+        self.fail_download_ids = set()
+        self.cancel_download_ids = set()
+
+    async def send_message(self, chat_id, text, **kwargs):
+        assert chat_id == self.owner_id
+        self.next_id += 1
+        message = SimpleNamespace(
+            id=self.next_id,
+            text=text,
+            chat=SimpleNamespace(id=chat_id, type=SimpleNamespace(value="private")),
+            from_user=SimpleNamespace(id=999),
+            reply_markup=kwargs.get("reply_markup"),
+        )
+        self.messages[message.id] = message
+        return message
+
+    async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+        assert chat_id == self.owner_id
+        self.messages[message_id].text = text
+        self.messages[message_id].reply_markup = kwargs.get("reply_markup")
+        return self.messages[message_id]
+
+    async def delete_messages(self, chat_id, message_id, revoke=False):
+        assert chat_id == self.owner_id and revoke is True
+        self.deleted.append(message_id)
+        self.messages.pop(message_id, None)
+
+    async def get_messages(self, chat_id, message_id, **_kwargs):
+        assert chat_id == self.owner_id
+        if isinstance(message_id, list):
+            return [self.messages.get(item_id) for item_id in message_id]
+        return self.messages.get(message_id)
+
+    async def resolve_peer(self, owner_id):
+        from pyrogram import raw
+
+        assert owner_id == self.owner_id
+        return raw.types.InputPeerSelf()
+
+    async def invoke(self, request):
+        self.invoked.append(request)
+
+    async def download_media(self, message, file_name, progress, progress_args):
+        self.downloaded.append(message.id)
+        if message.id in self.cancel_download_ids:
+            raise asyncio.CancelledError()
+        if message.id in self.fail_download_ids:
+            raise OSError("Simulated download failure")
+        kind = message.media.value
+        media = getattr(message, kind)
+        data = (kind + ":" + media.file_unique_id).encode("ascii")
+        target = Path(file_name)
+        target.write_bytes(data)
+        await progress(len(data) // 2, len(data), *progress_args)
+        await progress(len(data), len(data), *progress_args)
+        return str(target)
+
+
+async def check_download_pipeline(directory):
+    from datetime import datetime, timezone
+
+    from pyrogram.enums import ChatType, MessageMediaType
+
+    from tg_media_archiver.media_downloader import Archiver
+    from tg_media_archiver.module.app import Application, DownloadStatus, TaskNode
+
+    app = Application("config.yaml")
+    app.load_config()
+    app.save_path = str(directory / "pipeline-downloads")
+    app.temp_save_path = str(directory / "pipeline-temp")
+    app.pre_run()
+    archiver = Archiver(app)
+    client = FakeTelegram()
+
+    def message(message_id, kind, unique_id, album=None):
+        data = (kind + ":" + unique_id).encode("ascii")
+        media = SimpleNamespace(
+            file_name=f"original-{message_id}.{'mp4' if kind == 'video' else 'jpg'}",
+            file_unique_id=unique_id,
+            file_size=len(data),
+            mime_type="video/mp4" if kind == "video" else "image/jpeg",
+        )
+        item = SimpleNamespace(
+            id=message_id,
+            media=MessageMediaType(kind),
+            from_user=SimpleNamespace(id=1),
+            chat=SimpleNamespace(id=1, title=None, type=ChatType.PRIVATE),
+            forward_date=datetime.now(timezone.utc),
+            date=datetime.now(timezone.utc),
+            media_group_id=album,
+            caption=None,
+        )
+        setattr(item, kind, media)
+        return item
+
+    async def archive(item):
+        node = TaskNode(
+            chat_id=1,
+            from_user_id=1,
+            task_id=item.id,
+            client=client,
+            _persistent_queue=archiver.bot.persistent_queue,
+        )
+        assert await archiver.bot.persistent_queue.enqueue(1, item.id, 1)
+        assert await archiver.bot.persistent_queue.mark_running(1, item.id)
+        node._manual_started_ids.add(item.id)
+        archiver.bot.manual_progress.track(node, item)
+        await archiver.download_task(client, item, node)
+        return node.download_status[item.id]
+
+    first = message(40, "photo", "same-photo")
+    assert await archive(first) is DownloadStatus.SuccessDownload
+    first_path = await archiver.dedup.find_identity(
+        archiver.dedup.identity("photo", "same-photo", first.photo.file_size)
+    )
+    assert first_path and Path(first_path).is_file()
+
+    duplicate = message(41, "photo", "same-photo")
+    assert await archive(duplicate) is DownloadStatus.SkipDownload
+    assert client.downloaded == [40]
+
+    Path(first_path).unlink()
+    missing = message(42, "photo", "same-photo")
+    assert await archive(missing) is DownloadStatus.SuccessDownload
+    assert client.downloaded == [40, 42]
+
+    mixed = [
+        message(43, "photo", "album-photo", "mixed-1"),
+        message(44, "video", "album-video", "mixed-1"),
+    ]
+    for item in mixed:
+        assert await archive(item) is DownloadStatus.SuccessDownload
+    assert client.downloaded == [40, 42, 43, 44]
+
+    failed = message(45, "video", "missing-video")
+    client.fail_download_ids.add(45)
+
+    async def no_wait(_delay):
+        return None
+
+    with patch("tg_media_archiver.media_downloader.asyncio.sleep", new=no_wait):
+        assert await archive(failed) is DownloadStatus.FailedDownload
+    cancelled = message(46, "video", "cancelled-video")
+    client.cancel_download_ids.add(46)
+    try:
+        await archive(cancelled)
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("Cancelled transfer unexpectedly completed")
+
+    worker_item = message(47, "video", "retry-after-db-lock")
+    archiver.bot.client = client
+    assert await archiver.bot._enqueue_message(worker_item)
+    original_claim = archiver.bot.persistent_queue.mark_running
+    claim_attempts = 0
+
+    async def claim_after_lock(chat_id, message_id):
+        nonlocal claim_attempts
+        claim_attempts += 1
+        if claim_attempts == 1:
+            raise sqlite3.OperationalError("Simulated database lock")
+        return await original_claim(chat_id, message_id)
+
+    with (
+        patch.object(
+            archiver.bot.persistent_queue, "mark_running", new=claim_after_lock
+        ),
+        patch("tg_media_archiver.media_downloader.asyncio.sleep", new=no_wait),
+    ):
+        worker = asyncio.create_task(archiver.worker())
+        try:
+            await asyncio.wait_for(archiver.queue.join(), timeout=3)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+    assert claim_attempts == 2
+    assert client.downloaded[-1] == 47
+    assert archiver.queue.empty() and 47 not in archiver.bot._scheduled_ids
+
+    cleanup = await archiver.bot.persistent_queue.list_cleanup(1)
+    assert {row["message_id"] for row in cleanup} == {40, 41, 42, 43, 44, 47}
+    pending = await archiver.bot.persistent_queue.list_pending(recover_running=False)
+    assert {row["message_id"] for row in pending} == {45, 46}
+    assert all(row["state"] == "failed" for row in pending)
+    print("Forward download, SHA-256 skip, missing-file recovery and failures passed")
+
+
+async def check_progress_and_effects(directory):
+    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from tg_media_archiver.module.download_stat import get_download_result
+    from tg_media_archiver.module.manual_progress import ManualProgress
+    from tg_media_archiver.module.persistent_queue import PersistentQueue
+    from tg_media_archiver.module.queue_effects import COMPLETION_TEXT, QueueEffects
+
+    client = FakeTelegram()
+    panel = ManualProgress(
+        1,
+        refresh_seconds=0.05,
+        state_path=directory / "panel.json",
+        reposition_debounce=0.01,
+        reposition_max_delay=0.05,
+    )
+    await panel.restore(client, InlineKeyboardMarkup, InlineKeyboardButton, 999)
+    node = SimpleNamespace(
+        task_id=1, chat_id=1, download_status={}, _manual_started_ids=set()
+    )
+    media = SimpleNamespace(value="video")
+    forwarded = SimpleNamespace(
+        id=10, media=media, video=SimpleNamespace(file_name="clip.mp4")
+    )
+    panel.track(node, forwarded)
+    await panel.open(client, InlineKeyboardMarkup, InlineKeyboardButton)
+    first_panel = panel.panel_id
+    assert first_panel in client.messages
+    new_message = SimpleNamespace(
+        id=first_panel + 1,
+        chat=SimpleNamespace(id=1, type=SimpleNamespace(value="private")),
+        from_user=SimpleNamespace(id=1),
+    )
+    client.next_id = new_message.id
+    assert await panel.observe_message(
+        client, new_message, InlineKeyboardMarkup, InlineKeyboardButton
+    )
+    for _ in range(50):
+        if panel.panel_id != first_panel and first_panel in client.deleted:
+            break
+        await asyncio.sleep(0.02)
+    assert panel.panel_id > new_message.id
+    assert first_panel in client.deleted
+
+    get_download_result().setdefault(1, {})[10] = {"task_id": 1}
+    node.download_status[10] = SimpleNamespace(name="SuccessDownload")
+    panel.snapshot()
+    assert panel.counts["success"] == 1 and not panel.pending
+    assert 10 not in get_download_result().get(1, {})
+    current_panel = panel.panel_id
+    await panel.shutdown()
+    assert current_panel in client.messages
+    restored = ManualProgress(1, state_path=directory / "panel.json")
+    assert await restored.restore(
+        client, InlineKeyboardMarkup, InlineKeyboardButton, 999
+    )
+    assert restored.panel_id == current_panel
+    await restored.close(client)
+    assert current_panel in client.deleted and restored.panel_id is None
+    await restored.shutdown()
+
+    share = directory / "effect-files"
+    share.mkdir()
+    queue = PersistentQueue(share / "files.db")
+    assert await queue.enqueue(1, 20, 1)
+    assert await queue.enqueue(1, 21, 1)
+    assert await queue.mark_done(1, 20)
+    assert await queue.mark_failed(1, 21, "DownloadFailed")
+    effects = QueueEffects(queue, client, 1)
+    await effects.tick()
+    assert 20 in client.deleted and 21 not in client.deleted
+    assert not client.invoked
+    assert await queue.mark_done(1, 21)
+    original_next_completion = queue.next_completion
+
+    async def due_completion(owner_id):
+        return await original_next_completion(owner_id, quiet_seconds=0)
+
+    with patch.object(queue, "next_completion", new=due_completion):
+        await effects.tick()
+    assert 21 in client.deleted
+    assert len(client.invoked) == 1
+    assert client.invoked[0].message == COMPLETION_TEXT
+    assert not await queue.list_cleanup(1)
+    print("Manual progress, panel close/move and durable cleanup passed")
 
 
 def main():
@@ -142,12 +533,11 @@ def main():
             check_installation()
             check_configuration()
             asyncio.run(check_storage(Path(temporary)))
+            asyncio.run(check_private_intake(Path(temporary)))
+            asyncio.run(check_download_pipeline(Path(temporary)))
+            asyncio.run(check_progress_and_effects(Path(temporary)))
         finally:
             os.chdir(original_cwd)
-            media = sys.modules.get("tg_media_archiver.media_downloader")
-            if media is not None:
-                media.app.loop.close()
-                media.app.executor.shutdown(wait=True)
     print("Offline validation passed; Telegram was not contacted")
 
 

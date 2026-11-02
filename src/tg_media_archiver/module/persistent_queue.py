@@ -7,11 +7,10 @@ The queue shares ``files.db`` with the media deduplication index and owns
 import asyncio
 import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
-import secrets
-
 
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z_0-9]{0,127}$")
 
@@ -418,87 +417,3 @@ class PersistentQueue:
                WHERE chat_id=? AND message_id=? AND state!='done'""",
             (name,),
         )
-
-    async def requeue(self, chat_id, message_id):
-        """Explicitly replay a failed or completed ID; never reset active work."""
-        return await asyncio.to_thread(self._requeue_sync, chat_id, message_id)
-
-    def _requeue_sync(self, chat_id, message_id):
-        chat_id, message_id = self._ids(chat_id, message_id)
-        connection = self._connect()
-        try:
-            with connection:
-                connection.execute("BEGIN IMMEDIATE")
-                row = connection.execute(
-                    "SELECT user_id,state,batch_id FROM pending_downloads "
-                    "WHERE chat_id=? AND message_id=?",
-                    (chat_id, message_id),
-                ).fetchone()
-                if row is None or row["state"] not in ("failed", "done"):
-                    return False
-                batch_id = row["batch_id"]
-                if batch_id is not None:
-                    batch = connection.execute(
-                        "SELECT state FROM download_batches WHERE id=?", (batch_id,)
-                    ).fetchone()
-                    if batch and batch["state"] in ("claimed", "notified"):
-                        batch_id = self._open_batch(connection, row["user_id"])
-                    else:
-                        connection.execute(
-                            "UPDATE download_batches SET state='active',updated_at=? "
-                            "WHERE id=?",
-                            (time.time(), batch_id),
-                        )
-                    connection.execute(
-                        "DELETE FROM download_cleanup WHERE chat_id=? AND message_id=?",
-                        (chat_id, message_id),
-                    )
-                return (
-                    connection.execute(
-                        "UPDATE pending_downloads SET state='queued',batch_id=?,"
-                        "last_error_type=NULL,updated_at=? WHERE chat_id=? AND message_id=?",
-                        (batch_id, time.time(), chat_id, message_id),
-                    ).rowcount
-                    == 1
-                )
-        finally:
-            connection.close()
-
-    async def settle(self, chat_id, message_id, outcome, error_type=None):
-        """Convenience transition for worker outcome names or enum members."""
-        name = getattr(outcome, "name", outcome)
-        if name in ("success", "skip", "SuccessDownload", "SkipDownload"):
-            return await self.mark_done(chat_id, message_id)
-        if name in ("failed", "FailedDownload"):
-            return await self.mark_failed(chat_id, message_id, error_type)
-        raise ValueError("unsupported queue outcome")
-
-    def _import_pending_sync(self, rows):
-        normalized = []
-        for row in rows:
-            if isinstance(row, dict):
-                raw = (row["chat_id"], row["message_id"], row["user_id"])
-            else:
-                raw = tuple(row)
-            if len(raw) != 3:
-                raise ValueError("each imported row needs chat_id,message_id,user_id")
-            normalized.append((*self._ids(raw[0], raw[1]), self._user_id(raw[2])))
-        connection = self._connect()
-        try:
-            inserted = 0
-            with connection:
-                for chat_id, message_id, user_id in normalized:
-                    cursor = connection.execute(
-                        """INSERT OR IGNORE INTO pending_downloads
-                           (chat_id,message_id,user_id,state,attempts,last_error_type,updated_at)
-                           VALUES (?,?,?,'queued',0,NULL,?)""",
-                        (chat_id, message_id, user_id, time.time()),
-                    )
-                    inserted += cursor.rowcount
-            return inserted
-        finally:
-            connection.close()
-
-    async def import_pending(self, rows):
-        """Import ID triples atomically without resetting existing rows."""
-        return await asyncio.to_thread(self._import_pending_sync, list(rows))

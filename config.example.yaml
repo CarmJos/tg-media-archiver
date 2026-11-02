@@ -16,18 +16,13 @@ media_types: [photo, video, document]
 file_formats:
   video: [all]
   document: [all]
-  audio: [all]
 
 max_download_task: 3
 max_concurrent_transmissions: 2
 start_timeout: 120
-language: ZH
 log_level: INFO
-hide_file_name: false
-drop_no_audio_video: false
-enable_download_txt: false
 
-# Both Telegram sessions use this proxy. Leave empty for a direct connection.
+# Telegram sessions use this proxy. Leave empty for a direct connection.
 proxy: {}
 # proxy:
 #   scheme: http
@@ -35,11 +30,3 @@ proxy: {}
 #   port: 7890
 #   username: ""
 #   password: ""
-
-chat: []
-web_enabled: false
-web_host: 127.0.0.1
-web_port: 5000
-web_login_secret: ""
-upload_drive:
-  enable_upload_file: false

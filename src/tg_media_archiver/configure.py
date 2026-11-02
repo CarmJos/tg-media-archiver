@@ -1,10 +1,10 @@
 """Collect Telegram credentials through hidden terminal prompts."""
 
 import getpass
-from importlib.resources import files
 import os
-from pathlib import Path
 import re
+from importlib.resources import files
+from pathlib import Path
 
 from ruamel.yaml import YAML
 

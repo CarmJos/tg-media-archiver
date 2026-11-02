@@ -48,7 +48,4 @@ def main(argv=None) -> int:
     os.umask(0o002)
     from tg_media_archiver import media_downloader
 
-    if not media_downloader._check_config():
-        return 1
-    media_downloader.main()
-    return 0
+    return media_downloader.main()

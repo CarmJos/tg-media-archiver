@@ -12,7 +12,6 @@ from pyrogram.enums import ParseMode
 
 from tg_media_archiver.module.download_stat import get_download_result
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -230,6 +229,11 @@ class ManualProgress:
             status = node.download_status.get(message_id)
             status_name = getattr(status, "name", "")
             if status_name in ("SuccessDownload", "FailedDownload", "SkipDownload"):
+                chat_stats = download_result.get(node.chat_id)
+                if chat_stats is not None:
+                    chat_stats.pop(message_id, None)
+                    if not chat_stats:
+                        download_result.pop(node.chat_id, None)
                 label = {
                     "SuccessDownload": "success",
                     "FailedDownload": "failed",
@@ -445,6 +449,19 @@ class ManualProgress:
         if panel_id is not None:
             await self._safe_delete(client, panel_id)
 
+    async def shutdown(self):
+        """Stop local panel tasks while retaining the visible panel for restart."""
+        tasks = [self.loop_task, self._move_task, *self._delete_tasks]
+        tasks = [task for task in tasks if task is not None and not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.loop_task = None
+        self._move_task = None
+        self._delete_tasks.clear()
+        self._save_state()
+
     async def observe_message(self, client, message, markup, button):
         """Move an already-visible panel below new owner content after a burst."""
         chat = getattr(message, "chat", None)
@@ -560,7 +577,6 @@ class ManualProgress:
             text, finished = self.render()
             if time.monotonic() < self.next_edit_after:
                 continue
-            panel_id = self.panel_id
             activity = self.activity_revision
             edited = True
             if text != self._last_text or finished:

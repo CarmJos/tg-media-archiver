@@ -5,13 +5,13 @@ they disable a dedup hit, never a real download or final file save.
 """
 
 import asyncio
-from contextlib import asynccontextmanager
 import hashlib
 import logging
 import os
 import sqlite3
 import stat
 import threading
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -318,27 +318,6 @@ class MediaDedup:
         if hashed is None:
             return False
         return await self.record(path, hashed[0], hashed[1], identity)
-
-    async def bind_identity(self, kind, file_unique_id, media_size, path):
-        """Bind a Telegram identity to already saved bytes after online mapping."""
-        identity = self.identity(kind, file_unique_id, media_size)
-        if identity is None:
-            return False
-        return await self.register_existing(path, identity)
-
-    async def bootstrap_existing(self):
-        """Index current regular files; never follow symlink directories."""
-        indexed = 0
-        for directory, subdirs, files in os.walk(self.root, followlinks=False):
-            subdirs[:] = [
-                name
-                for name in subdirs
-                if not os.path.islink(os.path.join(directory, name))
-            ]
-            for name in files:
-                if await self.register_existing(os.path.join(directory, name)):
-                    indexed += 1
-        return indexed
 
     async def verified_path_digest(self, path):
         """Hash a target path even if the database is unavailable."""

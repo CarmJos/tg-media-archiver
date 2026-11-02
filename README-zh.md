@@ -20,7 +20,7 @@ TG Media Archiver 基于 [telegram_media_downloader](https://github.com/tangyoha
 
 ## 功能特性
 
-- **限定用户与会话** — 只接收授权用户在机器人私聊中转发的媒体。群组自动下载可关闭。
+- **限定用户与会话** — 只接收已登录账号本人在机器人私聊中转发的媒体。
 - **持久队列** — 将未完成任务写入 SQLite，重启后恢复。当前文件的传输会从头开始，不续接已下载字节。
 - **双层去重** — 先通过 Telegram 媒体标识检查已有文件，再对下载后的内容计算 SHA-256；仅在本地文件仍存在且校验通过时跳过。不同媒体标识的相同内容需要下载后才能比较哈希。
 - **手动进度面板** — `/progress` 显示排队数、正在下载的文件、字节数及速度。打开后，新的私聊消息会让面板重新移至聊天末尾。
@@ -55,7 +55,7 @@ docker compose run --rm archiver login
 docker compose up -d
 ```
 
-`login` 会登录 Telegram 用户账号，并将该账号设为唯一授权用户。示例 Compose 将 `./data` 挂载到容器 `/app`，将 `./downloads` 挂载到 `/app/downloads`。在 TrueNAS 中通过 GHCR 镜像安装 Custom App 的步骤见 [部署说明](.doc/TrueNAS.md)。
+`login` 会用 Telegram 个人账号确定唯一授权用户，并授权机器人会话。归档服务运行时通过机器人会话接收消息。示例 Compose 将 `./data` 挂载到容器 `/app`，将 `./downloads` 挂载到 `/app/downloads`。在 TrueNAS 中通过 GHCR 镜像安装 Custom App 的步骤见 [部署说明](.doc/TrueNAS.md)。
 
 升级时，将 `compose.yaml` 中的镜像标签改为目标版本，再执行：
 
@@ -63,6 +63,8 @@ docker compose up -d
 docker compose pull
 docker compose up -d
 ```
+
+现有部署可继续使用原来的 `config.yaml`、`sessions/` 及含有 `files.db` 的下载目录。程序读取仍需使用的配置并恢复未完成队列；旧的 Web、群组下载和云端上传配置会被忽略。中断的文件传输会从头开始。
 
 ### 本地 Python
 
@@ -90,7 +92,7 @@ tg-media-archiver --workdir ./data run
 
 ### 验证与依赖更新
 
-[`Validate` 工作流](.github/workflows/validate.yml) 在 Python 3.10、3.11 和 3.12 上构建并安装 Python 包，离线验证模块导入、命令行、配置、资源文件、加解密、文件发布、去重和持久队列恢复。
+[`Validate` 工作流](.github/workflows/validate.yml) 在 Python 3.10、3.11 和 3.12 上构建并安装 Python 包，离线验证模块导入、命令行、配置、资源文件、文件发布、去重和持久队列恢复。
 
 [Renovate](renovate.json) 更新依赖，包括主版本、GitHub Actions 和 Pyrogram 分支；Python 运行时版本保持不变。依赖 PR 在必需的 Docker 构建与 Python 验证均通过后自动合并。
 
@@ -110,11 +112,11 @@ tg-media-archiver --workdir ./data run
 | `allowed_user_ids` | 允许转发媒体的 Telegram 数字用户 ID；`login` 自动填入当前账号 |
 | `save_path` | 归档目录，`files.db` 与下载文件同目录 |
 | `file_path_prefix`、`date_format` | 子目录规则；默认按 `%Y_%m` 归档 |
+| `file_name_prefix`、`file_name_prefix_split` | 保存文件的命名规则 |
 | `media_types`、`file_formats` | 媒体类型与文件格式设置 |
 | `proxy` | Telegram 客户端代理 |
 | `max_download_task`、`max_concurrent_transmissions` | 下载工作器数与 Telegram 同时传输数 |
-| `chat` | 群组或频道历史下载设置；设为 `[]` 即关闭 |
-| `web_enabled` | 是否启动 Web 服务，默认 `false` |
+| `start_timeout`、`log_level` | 连接超时与日志等级 |
 
 ## 机器人指令
 
@@ -147,7 +149,7 @@ tg-media-archiver/
 
 ## 开源许可
 
-本项目采用 [MIT 许可证](LICENSE)。基于 [telegram_media_downloader 的 MIT 许可](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE) 开发；内置的 [CryptoJS](https://github.com/brix/crypto-js/blob/4.2.0/LICENSE) 也采用 MIT 许可。原作者版权署名保留在本项目许可证及内置组件源码中。
+本项目采用 [MIT 许可证](LICENSE)，基于 [telegram_media_downloader 的 MIT 许可](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE) 开发。原作者版权署名保留在本项目许可证中。
 
 ## 法律声明与免责声明
 

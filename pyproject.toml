@@ -33,15 +33,7 @@ classifiers = [
 ]
 dependencies = [
   "Pyrogram @ https://github.com/tangyoha/pyrogram/archive/51a100c5e2745471ee89c1dd96dd69962973108b.zip",
-  "rich==12.5.1",
-  "loguru==0.6.0",
-  "Werkzeug==2.2.2",
-  "Flask==2.2.2",
-  "ply==3.11",
   "ruamel.yaml==0.17.21",
-  "Flask-Login==0.6.2",
-  "pycryptodome==3.19.1",
-  "requests==2.32.3",
 ]
 
 [project.optional-dependencies]
@@ -64,8 +56,11 @@ include = ["tg_media_archiver*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-tg_media_archiver = ["config.example.yaml", "module/templates/*", "module/static/**/*"]
+tg_media_archiver = ["config.example.yaml"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
