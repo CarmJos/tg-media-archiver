@@ -41,7 +41,7 @@ dependencies = [
   "ruamel.yaml==0.17.21",
   "Flask-Login==0.6.2",
   "pycryptodome==3.19.1",
-  "requests==2.32.3",
+  "requests==2.33.0",
 ]
 
 [project.optional-dependencies]
