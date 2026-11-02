@@ -1,0 +1,126 @@
+<div align="center">
+
+<img src=".doc/images/banner.png" alt="TG Media Archiver banner" width="100%" />
+
+![Python](https://img.shields.io/badge/Python-3.10--3.12-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Docker-lightgrey)
+
+README LANGUAGES [ [**English**](README.md) | [简体中文](README-zh.md) ]
+
+</div>
+
+# **TG Media Archiver**
+
+<img src=".doc/images/logo.png" width="150" alt="TG Media Archiver logo" align="right" />
+
+_**Archive Telegram media forwarded to your bot on your own storage.**_
+
+TG Media Archiver builds on [telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader). An authorized user forwards photos, videos, or documents in a private chat with the bot. Each media item, including each item in a mixed album, enters a download queue and is saved to a configured directory.
+
+## Features
+
+- **Private, authorized intake** — Only forwarded media from configured Telegram user IDs in the bot's private chat is accepted. Automatic group downloads can be disabled.
+- **Persistent queue** — Unfinished jobs are stored in SQLite and recovered after a restart. An interrupted file starts downloading again from the beginning.
+- **Two-stage deduplication** — Check Telegram media identity before transfer, then compare SHA-256 after download. A duplicate is skipped only when its local file still exists and verifies. Identical content with a different Telegram identity must be downloaded before its hash can be compared.
+- **On-demand progress** — `/progress` shows queued jobs, active files, transferred bytes, and speed. While open, the panel moves below new private-chat messages.
+- **Chat cleanup** — After saving a file or verifying a duplicate, the corresponding forwarded copy is deleted from the private chat. A successful multi-item queue produces one completion notice.
+- **Shared-storage permissions** — Published files retain the destination directory's inherited ACL for NAS file management.
+
+## Installation
+
+### Docker Compose
+
+From the project directory:
+
+```sh
+docker compose build
+docker compose run --rm archiver configure
+```
+
+`configure` collects the API ID, API Hash, and Bot Token without echoing input. Edit `proxy` in `data/config.yaml` before logging in:
+
+```sh
+docker compose run --rm archiver login
+docker compose up -d
+```
+
+`login` signs into a Telegram user account and makes it the sole authorized user. The example Compose mounts `./data` at `/app` and `./downloads` at `/app/downloads`. See the [TrueNAS guide](.doc/TrueNAS.md) for building the image and installing the Custom App.
+
+### Local Python
+
+Python 3.10 through 3.12 is supported:
+
+```sh
+python -m pip install .
+tg-media-archiver --workdir ./data configure
+```
+
+Edit `proxy` in `data/config.yaml`, then continue:
+
+```sh
+tg-media-archiver --workdir ./data login
+tg-media-archiver --workdir ./data run
+```
+
+`python -m tg_media_archiver` runs the same CLI. `--workdir` defaults to the current directory; configuration, sessions, logs, and temporary files live under it. Get an API ID and API Hash from [Telegram API Development Tools](https://my.telegram.org/apps), and create a Bot Token with [@BotFather](https://t.me/BotFather).
+
+### Automated Docker builds
+
+The [`Docker` workflow](.github/workflows/docker.yml) builds `linux/amd64` and `linux/arm64` images on pushes to `main`, `master`, or `v*` tags, then publishes them to `ghcr.io/<repository-owner>/tg-media-archiver`. The default branch provides `latest`; version tags produce matching image versions. Pull requests build for validation. You can also run the workflow manually in GitHub Actions.
+
+Publishing uses the repository's built-in `GITHUB_TOKEN`; no additional registry password is needed.
+
+## Quick Start
+
+1. Run `configure`, edit the proxy if needed, then run `login`. Files are saved under the working directory's `downloads/` by default, grouped into `year_month` folders.
+2. Start the service, send `/help` to the bot in a private chat, then forward a photo, video, document, or mixed album.
+3. Send `/progress` to view the queue. Use the close button or `/progress off` to remove the panel and stop updates.
+
+See [`config.example.yaml`](config.example.yaml) for an example. The runtime configuration contains credentials, so keep the working directory on private storage.
+
+## Configuration Reference
+
+| Setting | Purpose |
+|---|---|
+| `api_id`, `api_hash`, `bot_token` | Telegram application and bot credentials |
+| `allowed_user_ids` | Authorized numeric Telegram user IDs; `login` fills in the signed-in account |
+| `save_path` | Archive root; `files.db` is stored alongside the downloads |
+| `file_path_prefix`, `date_format` | Subdirectory layout; default month format is `%Y_%m` |
+| `media_types`, `file_formats` | Media type and format settings |
+| `proxy` | Proxy used by the Telegram clients |
+| `max_download_task`, `max_concurrent_transmissions` | Worker count and simultaneous Telegram transmissions |
+| `chat` | Group/channel history download configuration; `[]` disables it |
+| `web_enabled` | Enables the Web service; defaults to `false` |
+
+## Bot Commands
+
+| Command | Action |
+|---|---|
+| `/start`, `/help` | Show usage |
+| `/progress` | Open or refresh the progress panel |
+| `/progress off` | Delete the panel and stop updates |
+
+## Project Structure
+
+```text
+tg-media-archiver/
+├── src/tg_media_archiver/
+│   ├── cli.py              # CLI entry point
+│   ├── configure.py        # Hidden-input configuration
+│   ├── login.py            # Telegram user login
+│   ├── media_downloader.py # Download scheduling
+│   ├── module/             # Bot, queue, deduplication, progress panel
+│   └── utils/              # File and logging utilities
+├── .doc/                 # Branding assets and TrueNAS deployment examples
+├── .github/workflows/    # Automated Docker builds and publishing
+├── config.example.yaml
+├── Dockerfile
+├── compose.yaml
+├── pyproject.toml
+└── LICENSE
+```
+
+## Open Source License
+
+This project is licensed under [MIT](LICENSE). It derives from [MIT-licensed telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE) and bundles [MIT-licensed CryptoJS](https://github.com/brix/crypto-js/blob/4.2.0/LICENSE). Original copyright notices remain in this project's license and the bundled component source.

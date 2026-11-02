@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+parser.out
+parsetab.py
+
+# Credentials and runtime state
+.env
+.env.*
+!.env.example
+config.yaml
+bot.yaml
+data.yaml
+proxy.env
+data/
+sessions/
+log/
+logs/
+temp/
+downloads/
+*.session*
+*.db
+*.db-*
+*.sqlite*
+*.log
+manual-progress-panel.json
+backups/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp

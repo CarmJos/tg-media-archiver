@@ -1,0 +1,45 @@
+# Run `tg-media-archiver configure` to enter credentials through hidden prompts.
+api_id: 0
+api_hash: ""
+bot_token: ""
+
+# `tg-media-archiver login` fills this with the signed-in user's numeric ID.
+allowed_user_ids: []
+
+save_path: downloads
+file_path_prefix: [media_datetime]
+file_name_prefix: [message_id, file_name]
+file_name_prefix_split: "_"
+date_format: "%Y_%m"
+
+media_types: [photo, video, document]
+file_formats:
+  video: [all]
+  document: [all]
+  audio: [all]
+
+max_download_task: 3
+max_concurrent_transmissions: 2
+start_timeout: 120
+language: ZH
+log_level: INFO
+hide_file_name: false
+drop_no_audio_video: false
+enable_download_txt: false
+
+# Both Telegram sessions use this proxy. Leave empty for a direct connection.
+proxy: {}
+# proxy:
+#   scheme: http
+#   hostname: proxy.example.com
+#   port: 7890
+#   username: ""
+#   password: ""
+
+chat: []
+web_enabled: false
+web_host: 127.0.0.1
+web_port: 5000
+web_login_secret: ""
+upload_drive:
+  enable_upload_file: false

@@ -1,0 +1,13 @@
+services:
+  archiver:
+    image: tg-media-archiver:local
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    volumes:
+      - /mnt/pool/apps/tg-media-archiver:/app
+      - /mnt/pool/downloads:/app/downloads
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

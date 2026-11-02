@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tg-media-archiver"
+version = "0.1.0"
+description = "A self-hosted Telegram bot that archives forwarded media to local or NAS storage, with SHA-256 deduplication, persistent download queues, and on-demand progress."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "CarmJos"}]
+keywords = [
+  "telegram",
+  "telegram-bot",
+  "media-downloader",
+  "media-archiver",
+  "self-hosted",
+  "deduplication",
+  "python",
+  "docker",
+  "truenas",
+  "sqlite",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Communications :: Chat",
+]
+dependencies = [
+  "Pyrogram @ https://github.com/tangyoha/pyrogram/archive/51a100c5e2745471ee89c1dd96dd69962973108b.zip",
+  "rich==12.5.1",
+  "loguru==0.6.0",
+  "Werkzeug==2.2.2",
+  "Flask==2.2.2",
+  "ply==3.11",
+  "ruamel.yaml==0.17.21",
+  "Flask-Login==0.6.2",
+  "pycryptodome==3.18.0",
+  "requests==2.32.3",
+]
+
+[project.optional-dependencies]
+speed = ["PyTgCrypto==1.2.6"]
+
+[project.scripts]
+tg-media-archiver = "tg_media_archiver.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/CarmJos/tg-media-archiver"
+Repository = "https://github.com/CarmJos/tg-media-archiver"
+Issues = "https://github.com/CarmJos/tg-media-archiver/issues"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tg_media_archiver*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+tg_media_archiver = ["config.example.yaml", "module/templates/*", "module/static/**/*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
