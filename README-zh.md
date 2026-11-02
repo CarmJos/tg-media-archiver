@@ -141,3 +141,13 @@ tg-media-archiver/
 ## 开源许可
 
 本项目采用 [MIT 许可证](LICENSE)。基于 [telegram_media_downloader 的 MIT 许可](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE) 开发；内置的 [CryptoJS](https://github.com/brix/crypto-js/blob/4.2.0/LICENSE) 也采用 MIT 许可。原作者版权署名保留在本项目许可证及内置组件源码中。
+
+## 法律声明与免责声明
+
+本项目发布旨在供源代码学习、技术研究与交流。项目的公开提供不构成对违法行为或侵害第三方合法权益行为的授权。
+
+使用者应自行遵守其行为所适用的法律法规、相关平台的服务条款，并尊重第三方合法权益。在访问、下载、存储、处理或分享任何内容前，使用者应取得必要授权或具备其他合法依据，并履行著作权、隐私及个人信息保护等方面的义务。
+
+本软件依据 [MIT 许可证](LICENSE) 按“现状”提供。在适用法律允许的范围内，作者及贡献者不对使用者的独立行为，以及使用或不当使用本软件所引发的索赔、损失或损害承担责任。
+
+本说明不变更 MIT 许可证授予的权利，也不排除或限制依法不得免除或限制的义务与责任。

@@ -141,3 +141,13 @@ tg-media-archiver/
 ## Open Source License
 
 This project is licensed under [MIT](LICENSE). It derives from [MIT-licensed telegram_media_downloader](https://github.com/tangyoha/telegram_media_downloader/blob/fe7ccdc2cc5fce5b04a464bc66cfb1266bf7ef45/LICENSE) and bundles [MIT-licensed CryptoJS](https://github.com/brix/crypto-js/blob/4.2.0/LICENSE). Original copyright notices remain in this project's license and the bundled component source.
+
+## Legal Notice and Disclaimer
+
+This project is published for source-code study, technical research, and educational exchange. Its availability does not authorize unlawful conduct or infringement of third-party rights.
+
+Users are responsible for ensuring that their activities comply with applicable laws and regulations, relevant platform terms, and third-party rights, including copyright, privacy, and data protection requirements. Before accessing, downloading, storing, processing, or sharing content, users must obtain any required permissions or otherwise establish a lawful basis for those activities.
+
+The software is provided "as is" under the [MIT License](LICENSE). To the extent permitted by applicable law, the authors and contributors disclaim liability for claims, losses, or damages arising from users' independent actions, use, or misuse of the software.
+
+This notice does not modify the MIT License or exclude or limit any obligations or liability that cannot lawfully be excluded or limited.
