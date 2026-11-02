@@ -45,7 +45,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-speed = ["PyTgCrypto==1.2.6"]
+speed = ["PyTgCrypto==1.2.12"]
 
 [project.scripts]
 tg-media-archiver = "tg_media_archiver.cli:main"
