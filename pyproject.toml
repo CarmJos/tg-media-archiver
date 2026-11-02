@@ -33,7 +33,7 @@ classifiers = [
 ]
 dependencies = [
   "Pyrogram @ https://github.com/tangyoha/pyrogram/archive/51a100c5e2745471ee89c1dd96dd69962973108b.zip",
-  "ruamel.yaml==0.17.21",
+  "ruamel.yaml==0.19.1",
 ]
 
 [project.optional-dependencies]
