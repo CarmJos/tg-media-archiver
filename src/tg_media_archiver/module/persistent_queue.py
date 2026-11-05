@@ -13,6 +13,11 @@ import threading
 import time
 
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z_0-9]{0,127}$")
+_BATCH_WINDOW_SECONDS = 3
+_MAX_BATCH_SPAN_SECONDS = 30
+_TERMINAL_RECOVERY_ERRORS = frozenset(
+    {"MissingMessage", "InvalidForward", "UnsupportedMedia", "UnauthorizedRecord"}
+)
 
 
 class PersistentQueue:
@@ -94,6 +99,10 @@ class PersistentQueue:
                                 connection.execute(
                                     "ALTER TABLE pending_downloads ADD COLUMN batch_id INTEGER"
                                 )
+                            if "outcome" not in columns:
+                                connection.execute(
+                                    "ALTER TABLE pending_downloads ADD COLUMN outcome TEXT"
+                                )
                             connection.execute(
                                 """CREATE TABLE IF NOT EXISTS download_batches (
                                     id INTEGER PRIMARY KEY,
@@ -114,6 +123,33 @@ class PersistentQueue:
                                     PRIMARY KEY(chat_id,message_id)
                                 )"""
                             )
+                            batch_columns = {
+                                row[1]
+                                for row in connection.execute(
+                                    "PRAGMA table_info(download_batches)"
+                                )
+                            }
+                            if "last_enqueued_at" not in batch_columns:
+                                connection.execute(
+                                    "ALTER TABLE download_batches "
+                                    "ADD COLUMN last_enqueued_at REAL"
+                                )
+                                connection.execute(
+                                    "UPDATE download_batches SET last_enqueued_at=updated_at "
+                                    "WHERE last_enqueued_at IS NULL"
+                                )
+                            if "summary_text" not in batch_columns:
+                                connection.execute(
+                                    "ALTER TABLE download_batches ADD COLUMN summary_text TEXT"
+                                )
+                            if "created_at" not in batch_columns:
+                                connection.execute(
+                                    "ALTER TABLE download_batches ADD COLUMN created_at REAL"
+                                )
+                                connection.execute(
+                                    "UPDATE download_batches SET created_at=last_enqueued_at "
+                                    "WHERE created_at IS NULL"
+                                )
                         self._ready = True
             return connection
         except BaseException:
@@ -155,21 +191,28 @@ class PersistentQueue:
     @staticmethod
     def _open_batch(connection, owner_id):
         row = connection.execute(
-            "SELECT id,state FROM download_batches WHERE owner_id=? "
+            "SELECT id,state,last_enqueued_at,created_at FROM download_batches "
+            "WHERE owner_id=? "
             "AND state IN ('active','ready') ORDER BY id DESC LIMIT 1",
             (owner_id,),
         ).fetchone()
         now = time.time()
-        if row:
+        if (
+            row
+            and now - (row["last_enqueued_at"] or 0) <= _BATCH_WINDOW_SECONDS
+            and now - (row["created_at"] or 0) <= _MAX_BATCH_SPAN_SECONDS
+        ):
             connection.execute(
-                "UPDATE download_batches SET state='active',updated_at=? WHERE id=?",
-                (now, row["id"]),
+                "UPDATE download_batches SET state='active',updated_at=?,"
+                "last_enqueued_at=? WHERE id=?",
+                (now, now, row["id"]),
             )
             return row["id"]
         return connection.execute(
-            "INSERT INTO download_batches(owner_id,state,updated_at,notification_random_id) "
-            "VALUES (?,'active',?,?)",
-            (owner_id, now, secrets.randbits(63)),
+            "INSERT INTO download_batches"
+            "(owner_id,state,updated_at,last_enqueued_at,created_at,"
+            "notification_random_id) VALUES (?,'active',?,?,?,?)",
+            (owner_id, now, now, now, secrets.randbits(63)),
         ).lastrowid
 
     def _initialize_lifecycle_sync(self, owner_id):
@@ -206,16 +249,72 @@ class PersistentQueue:
                     # Call at startup, before workers are created. A crashed
                     # running task becomes claimable again without losing attempts.
                     connection.execute(
-                        "UPDATE pending_downloads SET state='queued',updated_at=? "
+                        "UPDATE pending_downloads SET state='queued',outcome=NULL,"
+                        "updated_at=? "
                         "WHERE state='running'",
                         (time.time(),),
                     )
+                    # Failed tasks will be retried after recovery. Keep them
+                    # nonterminal while the archive index and workers start.
+                    failed = connection.execute(
+                        "SELECT chat_id,message_id,user_id,batch_id,last_error_type "
+                        "FROM pending_downloads WHERE state='failed'"
+                    ).fetchall()
+                    for item in failed:
+                        if item["last_error_type"] in _TERMINAL_RECOVERY_ERRORS:
+                            continue
+                        batch_id = item["batch_id"]
+                        if batch_id is not None:
+                            batch = connection.execute(
+                                "SELECT state,summary_text FROM download_batches "
+                                "WHERE id=?",
+                                (batch_id,),
+                            ).fetchone()
+                            if batch and batch["state"] in ("claimed", "notified"):
+                                if (
+                                    batch["state"] == "claimed"
+                                    and batch["summary_text"] is None
+                                ):
+                                    connection.execute(
+                                        "UPDATE download_batches SET summary_text=? "
+                                        "WHERE id=?",
+                                        (
+                                            self._completion_text(connection, batch_id),
+                                            batch_id,
+                                        ),
+                                    )
+                                batch_id = self._open_batch(
+                                    connection, int(item["user_id"])
+                                )
+                            elif batch and batch["state"] == "ready":
+                                connection.execute(
+                                    "UPDATE download_batches SET state='active' "
+                                    "WHERE id=?",
+                                    (batch_id,),
+                                )
+                        connection.execute(
+                            "UPDATE pending_downloads SET state='queued',outcome=NULL,"
+                            "updated_at=?,batch_id=? WHERE chat_id=? AND message_id=?",
+                            (
+                                time.time(),
+                                batch_id,
+                                item["chat_id"],
+                                item["message_id"],
+                            ),
+                        )
                 rows = connection.execute(
                     """SELECT chat_id,message_id,user_id,state,attempts,
                               last_error_type,updated_at
                        FROM pending_downloads WHERE state IN ('queued','running','failed')
                        ORDER BY updated_at,chat_id,message_id"""
                 ).fetchall()
+                if recover_running:
+                    rows = [
+                        row
+                        for row in rows
+                        if row["state"] != "failed"
+                        or row["last_error_type"] not in _TERMINAL_RECOVERY_ERRORS
+                    ]
                 return [dict(row) for row in rows]
         finally:
             connection.close()
@@ -243,21 +342,62 @@ class PersistentQueue:
 
     async def mark_running(self, chat_id, message_id):
         """Claim a queued or previously failed row and increment attempts."""
+        return await asyncio.to_thread(self._mark_running_sync, chat_id, message_id)
+
+    def _mark_running_sync(self, chat_id, message_id):
+        chat_id, message_id = self._ids(chat_id, message_id)
+        connection = self._connect()
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT state,batch_id,user_id FROM pending_downloads "
+                    "WHERE chat_id=? AND message_id=?",
+                    (chat_id, message_id),
+                ).fetchone()
+                if row is None or row["state"] not in ("queued", "failed"):
+                    return False
+                batch_id = row["batch_id"]
+                if batch_id is not None:
+                    batch = connection.execute(
+                        "SELECT state FROM download_batches WHERE id=?", (batch_id,)
+                    ).fetchone()
+                    if batch and batch["state"] in ("claimed", "notified"):
+                        batch_id = self._open_batch(connection, int(row["user_id"]))
+                    elif batch and batch["state"] == "ready":
+                        connection.execute(
+                            "UPDATE download_batches SET state='active' WHERE id=?",
+                            (batch_id,),
+                        )
+                connection.execute(
+                    "UPDATE pending_downloads SET state='running',"
+                    "attempts=attempts+1,last_error_type=NULL,outcome=NULL,"
+                    "updated_at=?,batch_id=? WHERE chat_id=? AND message_id=?",
+                    (time.time(), batch_id, chat_id, message_id),
+                )
+                return True
+        finally:
+            connection.close()
+
+    async def mark_queued(self, chat_id, message_id):
+        """Keep an interrupted transfer pending across a controlled shutdown."""
         return await asyncio.to_thread(
             self._transition_sync,
             chat_id,
             message_id,
-            """UPDATE pending_downloads
-               SET state='running', attempts=attempts+1,
-                   last_error_type=NULL, updated_at=?
-               WHERE chat_id=? AND message_id=? AND state IN ('queued','failed')""",
+            """UPDATE pending_downloads SET state='queued',outcome=NULL,updated_at=?
+               WHERE chat_id=? AND message_id=? AND state='running'""",
         )
 
-    async def mark_done(self, chat_id, message_id):
+    async def mark_done(self, chat_id, message_id, outcome="downloaded"):
         """Mark a completed or deduplicated download. Errors propagate."""
-        return await asyncio.to_thread(self._mark_done_sync, chat_id, message_id)
+        if outcome not in ("downloaded", "skipped"):
+            raise ValueError("outcome must be downloaded or skipped")
+        return await asyncio.to_thread(
+            self._mark_done_sync, chat_id, message_id, outcome
+        )
 
-    def _mark_done_sync(self, chat_id, message_id):
+    def _mark_done_sync(self, chat_id, message_id, outcome):
         chat_id, message_id = self._ids(chat_id, message_id)
         connection = self._connect()
         try:
@@ -271,9 +411,10 @@ class PersistentQueue:
                     return False
                 now = time.time()
                 connection.execute(
-                    "UPDATE pending_downloads SET state='done',last_error_type=NULL,updated_at=? "
+                    "UPDATE pending_downloads SET state='done',last_error_type=NULL,"
+                    "outcome=?,updated_at=? "
                     "WHERE chat_id=? AND message_id=?",
-                    (now, chat_id, message_id),
+                    (outcome, now, chat_id, message_id),
                 )
                 batch_id = row["batch_id"]
                 if batch_id is not None:
@@ -282,19 +423,24 @@ class PersistentQueue:
                         "(chat_id,message_id,batch_id,done_at) VALUES (?,?,?,?)",
                         (chat_id, message_id, batch_id, now),
                     )
-                    remaining = connection.execute(
-                        "SELECT 1 FROM pending_downloads WHERE batch_id=? AND state!='done' LIMIT 1",
-                        (batch_id,),
-                    ).fetchone()
-                    if not remaining:
-                        connection.execute(
-                            "UPDATE download_batches SET state='ready',updated_at=? "
-                            "WHERE id=? AND state='active'",
-                            (now, batch_id),
-                        )
+                    self._settle_batch(connection, batch_id, now)
                 return True
         finally:
             connection.close()
+
+    @staticmethod
+    def _settle_batch(connection, batch_id, now):
+        if connection.execute(
+            "SELECT 1 FROM pending_downloads WHERE batch_id=? "
+            "AND state IN ('queued','running') LIMIT 1",
+            (batch_id,),
+        ).fetchone():
+            return
+        connection.execute(
+            "UPDATE download_batches SET state='ready',updated_at=? "
+            "WHERE id=? AND state='active'",
+            (now, batch_id),
+        )
 
     def _list_cleanup_sync(self, owner_id, limit):
         owner_id = self._user_id(owner_id)
@@ -334,6 +480,37 @@ class PersistentQueue:
     async def ack_cleanup(self, chat_id, message_id):
         return await asyncio.to_thread(self._ack_cleanup_sync, chat_id, message_id)
 
+    @staticmethod
+    def _completion_text(connection, batch_id):
+        row = connection.execute(
+            """SELECT count(*) AS total,
+                      sum(CASE WHEN state='done' AND outcome='downloaded' THEN 1 ELSE 0 END) AS downloaded,
+                      sum(CASE WHEN state='done' AND outcome='skipped' THEN 1 ELSE 0 END) AS skipped,
+                      sum(CASE WHEN state='done' AND outcome IS NULL THEN 1 ELSE 0 END) AS unknown,
+                      sum(CASE WHEN state='failed' THEN 1 ELSE 0 END) AS failed
+               FROM pending_downloads WHERE batch_id=?""",
+            (batch_id,),
+        ).fetchone()
+        total = int(row["total"])
+        downloaded = int(row["downloaded"])
+        skipped = int(row["skipped"])
+        unknown = int(row["unknown"])
+        failed = int(row["failed"])
+        if total != downloaded + skipped + unknown + failed:
+            raise ValueError("Batch contains unsettled or invalid outcomes")
+        title = (
+            "⚠️ 本轮任务已结束，部分文件下载失败。"
+            if failed
+            else "✅ 本轮下载任务已完成。"
+        )
+        lines = [
+            title,
+            f"总计 {total} · 已下载 {downloaded} · 跳过 {skipped} · 失败 {failed}",
+        ]
+        if unknown:
+            lines.append(f"历史完成记录 {unknown}（原版本未区分下载与跳过）")
+        return "\n".join(lines)
+
     def _next_completion_sync(self, owner_id, quiet_seconds):
         owner_id = self._user_id(owner_id)
         connection = self._connect()
@@ -342,47 +519,52 @@ class PersistentQueue:
                 connection.execute("BEGIN IMMEDIATE")
                 # Retry a claimed notice with the same Telegram random_id after a restart.
                 row = connection.execute(
-                    "SELECT id,owner_id,notification_random_id FROM download_batches "
+                    "SELECT id,owner_id,notification_random_id,summary_text FROM download_batches "
                     "WHERE owner_id=? AND state='claimed' ORDER BY id LIMIT 1",
                     (owner_id,),
                 ).fetchone()
                 if row:
+                    if row["summary_text"] is None:
+                        summary = self._completion_text(connection, row["id"])
+                        connection.execute(
+                            "UPDATE download_batches SET summary_text=? WHERE id=?",
+                            (summary, row["id"]),
+                        )
+                        return {**dict(row), "summary_text": summary}
                     return dict(row)
                 for batch in connection.execute(
-                    "SELECT id,owner_id,notification_random_id,updated_at FROM download_batches "
+                    "SELECT id,owner_id,notification_random_id,last_enqueued_at "
+                    "FROM download_batches "
                     "WHERE owner_id=? AND state='ready' ORDER BY id",
                     (owner_id,),
                 ).fetchall():
-                    if time.time() - batch["updated_at"] < quiet_seconds:
+                    if time.time() - (batch["last_enqueued_at"] or 0) < quiet_seconds:
                         continue
                     if connection.execute(
-                        "SELECT 1 FROM pending_downloads WHERE batch_id=? AND state!='done' LIMIT 1",
+                        "SELECT 1 FROM pending_downloads WHERE batch_id=? "
+                        "AND state IN ('queued','running') LIMIT 1",
                         (batch["id"],),
                     ).fetchone():
                         continue
-                    count = connection.execute(
-                        "SELECT count(*) FROM pending_downloads WHERE batch_id=?",
-                        (batch["id"],),
-                    ).fetchone()[0]
-                    if count > 1:
-                        connection.execute(
-                            "UPDATE download_batches SET state='claimed' WHERE id=? AND state='ready'",
-                            (batch["id"],),
-                        )
-                        return {
+                    summary = self._completion_text(connection, batch["id"])
+                    connection.execute(
+                        "UPDATE download_batches SET state='claimed',summary_text=? "
+                        "WHERE id=? AND state='ready'",
+                        (summary, batch["id"]),
+                    )
+                    return {
+                        **{
                             key: batch[key]
                             for key in ("id", "owner_id", "notification_random_id")
-                        }
-                    connection.execute(
-                        "UPDATE download_batches SET state='notified',notified_at=? WHERE id=?",
-                        (time.time(), batch["id"]),
-                    )
+                        },
+                        "summary_text": summary,
+                    }
                 return None
         finally:
             connection.close()
 
     async def next_completion(self, owner_id, quiet_seconds=3):
-        """Claim a completed multi-item batch after a short album arrival window."""
+        """Claim a settled batch once its arrival window has passed."""
         return await asyncio.to_thread(
             self._next_completion_sync, owner_id, quiet_seconds
         )
@@ -409,11 +591,30 @@ class PersistentQueue:
         """Keep a failed task recoverable; store only an exception class name."""
         name = self._error_name(error_type)
         return await asyncio.to_thread(
-            self._transition_sync,
-            chat_id,
-            message_id,
-            """UPDATE pending_downloads
-               SET state='failed',last_error_type=?,updated_at=?
-               WHERE chat_id=? AND message_id=? AND state!='done'""",
-            (name,),
+            self._mark_failed_sync, chat_id, message_id, name
         )
+
+    def _mark_failed_sync(self, chat_id, message_id, name):
+        chat_id, message_id = self._ids(chat_id, message_id)
+        connection = self._connect()
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT state,batch_id FROM pending_downloads "
+                    "WHERE chat_id=? AND message_id=?",
+                    (chat_id, message_id),
+                ).fetchone()
+                if row is None or row["state"] == "done":
+                    return False
+                now = time.time()
+                connection.execute(
+                    "UPDATE pending_downloads SET state='failed',last_error_type=?,"
+                    "outcome='failed',updated_at=? WHERE chat_id=? AND message_id=?",
+                    (name, now, chat_id, message_id),
+                )
+                if row["batch_id"] is not None:
+                    self._settle_batch(connection, row["batch_id"], now)
+                return True
+        finally:
+            connection.close()

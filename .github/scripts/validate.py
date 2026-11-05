@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
 from importlib import import_module, metadata, resources
 from pathlib import Path
 from types import SimpleNamespace
@@ -116,6 +117,23 @@ async def check_storage(directory):
     second.unlink()
     assert await index.find_identity(second_identity) is None
 
+    imported = share / "imported.bin"
+    imported.write_bytes(contents)
+    await index.refresh_index()
+    assert Path(await index.find_identity(identity)) == imported
+    assert Path(await index.find_identity(second_identity)) == imported
+    moved = share / "renamed.bin"
+    imported.rename(moved)
+    await index.refresh_index()
+    assert Path(await index.find_identity(identity)) == moved
+    with patch.object(
+        index, "_hash_file", side_effect=AssertionError("Unchanged file rehashed")
+    ):
+        assert (await index.refresh_index())["indexed"] == 0
+    moved.unlink()
+    await index.refresh_index()
+    assert await index.find_identity(identity) is None
+
     queue = PersistentQueue(share / "files.db")
     assert await queue.enqueue(1, 10, 1)
     assert not await queue.enqueue(1, 10, 1)
@@ -133,7 +151,7 @@ async def check_storage(directory):
     legacy = directory / "legacy"
     legacy.mkdir()
     legacy_db = legacy / "files.db"
-    with sqlite3.connect(legacy_db) as connection:
+    with closing(sqlite3.connect(legacy_db)) as connection, connection:
         connection.execute(
             "CREATE TABLE pending_downloads (chat_id INTEGER, message_id INTEGER, "
             "user_id INTEGER, state TEXT, attempts INTEGER, "
@@ -237,6 +255,14 @@ async def check_private_intake(directory):
     for buffered in startup_bot._startup_buffer:
         await startup_bot._enqueue_message(buffered, recovered=True)
     assert startup_accepted == [37]
+    await startup_bot.persistent_queue.mark_done(1, 37)
+    await startup_bot.persistent_queue.enqueue(1, 38, 1)
+    with patch.object(startup_bot.client, "get_messages", side_effect=OSError):
+        await startup_bot._recover_pending()
+    unavailable = await startup_bot.persistent_queue.list_pending(recover_running=False)
+    assert len(unavailable) == 1 and unavailable[0]["last_error_type"] == "OSError"
+    retryable = await startup_bot.persistent_queue.list_pending(recover_running=True)
+    assert len(retryable) == 1 and retryable[0]["state"] == "queued"
     print("Private owner-only photo, video and mixed-album intake passed")
 
 
@@ -247,6 +273,7 @@ class FakeTelegram:
         self.owner_id = owner_id
         self.next_id = 100
         self.messages = {}
+        self.edits = []
         self.deleted = []
         self.invoked = []
         self.downloaded = []
@@ -268,14 +295,16 @@ class FakeTelegram:
 
     async def edit_message_text(self, chat_id, message_id, text, **kwargs):
         assert chat_id == self.owner_id
+        self.edits.append((message_id, text))
         self.messages[message_id].text = text
         self.messages[message_id].reply_markup = kwargs.get("reply_markup")
         return self.messages[message_id]
 
     async def delete_messages(self, chat_id, message_id, revoke=False):
         assert chat_id == self.owner_id and revoke is True
-        self.deleted.append(message_id)
-        self.messages.pop(message_id, None)
+        for item_id in message_id if isinstance(message_id, list) else [message_id]:
+            self.deleted.append(item_id)
+            self.messages.pop(item_id, None)
 
     async def get_messages(self, chat_id, message_id, **_kwargs):
         assert chat_id == self.owner_id
@@ -394,12 +423,19 @@ async def check_download_pipeline(directory):
         assert await archive(failed) is DownloadStatus.FailedDownload
     cancelled = message(46, "video", "cancelled-video")
     client.cancel_download_ids.add(46)
+    failures_before_cancel = archiver.bot.manual_progress.counts["failed"]
     try:
         await archive(cancelled)
     except asyncio.CancelledError:
         pass
     else:
         raise AssertionError("Cancelled transfer unexpectedly completed")
+    pending_after_cancel = archiver.bot.manual_progress.pending[46][0]
+    assert pending_after_cancel.download_status[46] is DownloadStatus.Downloading
+    assert 46 not in pending_after_cancel._manual_started_ids
+    archiver.bot.manual_progress.snapshot()
+    assert 46 in archiver.bot.manual_progress.pending
+    assert archiver.bot.manual_progress.counts["failed"] == failures_before_cancel
 
     worker_item = message(47, "video", "retry-after-db-lock")
     archiver.bot.client = client
@@ -434,22 +470,29 @@ async def check_download_pipeline(directory):
     assert {row["message_id"] for row in cleanup} == {40, 41, 42, 43, 44, 47}
     pending = await archiver.bot.persistent_queue.list_pending(recover_running=False)
     assert {row["message_id"] for row in pending} == {45, 46}
-    assert all(row["state"] == "failed" for row in pending)
+    assert {row["message_id"]: row["state"] for row in pending} == {
+        45: "failed",
+        46: "queued",
+    }
     print("Forward download, SHA-256 skip, missing-file recovery and failures passed")
 
 
 async def check_progress_and_effects(directory):
+    import time
+
     from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
     from tg_media_archiver.module.download_stat import get_download_result
     from tg_media_archiver.module.manual_progress import ManualProgress
     from tg_media_archiver.module.persistent_queue import PersistentQueue
-    from tg_media_archiver.module.queue_effects import COMPLETION_TEXT, QueueEffects
+    from tg_media_archiver.module.queue_effects import QueueEffects
 
     client = FakeTelegram()
     panel = ManualProgress(
         1,
         refresh_seconds=0.05,
+        visible_seconds=0.18,
+        settle_grace_seconds=0.05,
         state_path=directory / "panel.json",
         reposition_debounce=0.01,
         reposition_max_delay=0.05,
@@ -465,6 +508,7 @@ async def check_progress_and_effects(directory):
     panel.track(node, forwarded)
     await panel.open(client, InlineKeyboardMarkup, InlineKeyboardButton)
     first_panel = panel.panel_id
+    first_deadline = panel.visible_until
     assert first_panel in client.messages
     new_message = SimpleNamespace(
         id=first_panel + 1,
@@ -481,6 +525,7 @@ async def check_progress_and_effects(directory):
         await asyncio.sleep(0.02)
     assert panel.panel_id > new_message.id
     assert first_panel in client.deleted
+    assert panel.visible_until == first_deadline
 
     get_download_result().setdefault(1, {})[10] = {"task_id": 1}
     node.download_status[10] = SimpleNamespace(name="SuccessDownload")
@@ -488,6 +533,21 @@ async def check_progress_and_effects(directory):
     assert panel.counts["success"] == 1 and not panel.pending
     assert 10 not in get_download_result().get(1, {})
     current_panel = panel.panel_id
+    for _ in range(30):
+        if (
+            not panel.enabled
+            and "✅ 当前任务已结束" in client.messages[current_panel].text
+        ):
+            break
+        await asyncio.sleep(0.02)
+    assert not panel.enabled
+    assert "✅ 当前任务已结束" in client.messages[current_panel].text
+    assert "处理进度 [" not in client.messages[current_panel].text
+    assert any(
+        key.callback_data == f"mp:open:{panel.generation}"
+        for row in client.messages[current_panel].reply_markup.inline_keyboard
+        for key in row
+    )
     await panel.shutdown()
     assert current_panel in client.messages
     restored = ManualProgress(1, state_path=directory / "panel.json")
@@ -495,9 +555,108 @@ async def check_progress_and_effects(directory):
         client, InlineKeyboardMarkup, InlineKeyboardButton, 999
     )
     assert restored.panel_id == current_panel
-    await restored.close(client)
-    assert current_panel in client.deleted and restored.panel_id is None
+    await restored.open(client, InlineKeyboardMarkup, InlineKeyboardButton)
+    assert restored.enabled
+    assert "处理进度 [" in client.messages[current_panel].text
+    restored_deadline = restored.visible_until
     await restored.shutdown()
+    resumed = ManualProgress(
+        1,
+        refresh_seconds=0.02,
+        visible_seconds=0.18,
+        settle_grace_seconds=0.05,
+        state_path=directory / "panel.json",
+    )
+    assert await resumed.restore(
+        client, InlineKeyboardMarkup, InlineKeyboardButton, 999
+    )
+    assert resumed.visible_until == restored_deadline
+    await asyncio.sleep(max(0, restored_deadline - time.time()) + 0.04)
+    assert not resumed.enabled
+    assert "处理进度 [" not in client.messages[current_panel].text
+    await resumed.close(client)
+    assert current_panel in client.deleted and resumed.panel_id is None
+    await resumed.shutdown()
+
+    ongoing = ManualProgress(
+        1,
+        refresh_seconds=0.02,
+        visible_seconds=0.08,
+        settle_grace_seconds=0.08,
+    )
+    ongoing_node = SimpleNamespace(
+        task_id=2, chat_id=1, download_status={}, _manual_started_ids=set()
+    )
+    ongoing.track(ongoing_node, forwarded)
+    next_forwarded = SimpleNamespace(
+        id=11, media=media, video=SimpleNamespace(file_name="next.mp4")
+    )
+    second_node = SimpleNamespace(
+        task_id=3, chat_id=1, download_status={}, _manual_started_ids=set()
+    )
+    ongoing.track(second_node, next_forwarded)
+    await ongoing.open(client, InlineKeyboardMarkup, InlineKeyboardButton)
+    ongoing_id = ongoing.panel_id
+    for _ in range(30):
+        if not ongoing.enabled and client.messages[ongoing_id].text == (
+            "任务仍在进行中，如需查看进度条请点击按钮。"
+        ):
+            break
+        await asyncio.sleep(0.02)
+    assert not ongoing.enabled
+    assert client.messages[ongoing_id].text == (
+        "任务仍在进行中，如需查看进度条请点击按钮。"
+    )
+
+    class FakeQuery:
+        def __init__(self, data, user_id):
+            self.data = data
+            self.from_user = SimpleNamespace(id=user_id)
+            self.message = client.messages[ongoing_id]
+            self.answers = []
+
+        async def answer(self, text=None):
+            self.answers.append(text)
+
+    invalid = FakeQuery(f"mp:open:{ongoing.generation}", user_id=2)
+    assert not await ongoing.callback(client, invalid)
+    assert not ongoing.enabled
+    reopen = FakeQuery(f"mp:open:{ongoing.generation}", user_id=1)
+    assert await ongoing.callback(client, reopen)
+    assert ongoing.enabled
+    assert "处理进度 [" in client.messages[ongoing_id].text
+    for _ in range(30):
+        if not ongoing.enabled and client.messages[ongoing_id].text == (
+            "任务仍在进行中，如需查看进度条请点击按钮。"
+        ):
+            break
+        await asyncio.sleep(0.02)
+    edits_while_parked = len(client.edits)
+    ongoing_node.download_status[10] = SimpleNamespace(name="SuccessDownload")
+    ongoing.snapshot()
+    await asyncio.sleep(0.02)
+    assert len(client.edits) == edits_while_parked
+    second_node.download_status[11] = SimpleNamespace(name="SkipDownload")
+    ongoing.snapshot()
+    for _ in range(30):
+        if "✅ 当前任务已结束" in client.messages[ongoing_id].text:
+            break
+        await asyncio.sleep(0.02)
+    assert "成功 1 · 失败 0 · 跳过 1" in client.messages[ongoing_id].text
+    assert len(client.edits) == edits_while_parked + 1
+    close = FakeQuery(f"mp:off:{ongoing.generation}", user_id=1)
+    assert await ongoing.callback(client, close)
+    assert ongoing_id in client.deleted and ongoing.panel_id is None
+    ongoing.track(
+        SimpleNamespace(
+            task_id=4, chat_id=1, download_status={}, _manual_started_ids=set()
+        ),
+        SimpleNamespace(
+            id=12, media=media, video=SimpleNamespace(file_name="later.mp4")
+        ),
+    )
+    assert ongoing.panel_id is None
+    await ongoing.shutdown()
 
     share = directory / "effect-files"
     share.mkdir()
@@ -507,10 +666,6 @@ async def check_progress_and_effects(directory):
     assert await queue.mark_done(1, 20)
     assert await queue.mark_failed(1, 21, "DownloadFailed")
     effects = QueueEffects(queue, client, 1)
-    await effects.tick()
-    assert 20 in client.deleted and 21 not in client.deleted
-    assert not client.invoked
-    assert await queue.mark_done(1, 21)
     original_next_completion = queue.next_completion
 
     async def due_completion(owner_id):
@@ -518,9 +673,16 @@ async def check_progress_and_effects(directory):
 
     with patch.object(queue, "next_completion", new=due_completion):
         await effects.tick()
-    assert 21 in client.deleted
+    assert 20 in client.deleted and 21 not in client.deleted
     assert len(client.invoked) == 1
-    assert client.invoked[0].message == COMPLETION_TEXT
+    assert "已下载 1 · 跳过 0 · 失败 1" in client.invoked[0].message
+    assert await queue.mark_running(1, 21)
+    assert await queue.mark_done(1, 21, "skipped")
+    with patch.object(queue, "next_completion", new=due_completion):
+        await effects.tick()
+    assert 21 in client.deleted
+    assert len(client.invoked) == 2
+    assert "总计 1 · 已下载 0 · 跳过 1 · 失败 0" in client.invoked[1].message
     assert not await queue.list_cleanup(1)
     print("Manual progress, panel close/move and durable cleanup passed")
 

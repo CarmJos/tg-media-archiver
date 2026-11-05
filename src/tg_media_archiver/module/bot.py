@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 HELP_TEXT = (
     "🤖 Telegram 媒体归档机器人\n"
     "/start、/help — 查看说明\n"
-    "/progress — 查看当前队列\n"
-    "/progress off — 删除进度面板并停止更新\n\n"
+    "/progress — 查看当前队列（10 秒后收起，可点击按钮再次查看）\n"
+    "/progress off — 删除进度消息\n\n"
     "请在私聊中转发图片、视频或文件。保存或确认重复后，转发消息会为双方删除。"
 )
 
@@ -89,7 +89,7 @@ class DownloadBot:
         self._add_handler(
             CallbackQueryHandler(
                 self._on_progress_callback,
-                filters.regex(r"^mp:off:[0-9]+$"),
+                filters.regex(r"^mp:(?:off|open):[0-9]+$"),
             )
         )
         self._add_handler(
@@ -181,6 +181,7 @@ class DownloadBot:
 
         for offset in range(0, len(ids), 100):
             batch = ids[offset : offset + 100]
+            unavailable_ids = set()
             try:
                 found = await self.client.get_messages(self.owner_id, batch, replies=0)
                 messages = found if isinstance(found, list) else [found]
@@ -198,6 +199,10 @@ class DownloadBot:
                             )
                         )
                     except Exception as item_exc:
+                        unavailable_ids.add(message_id)
+                        await self.persistent_queue.mark_failed(
+                            self.owner_id, message_id, type(item_exc).__name__
+                        )
                         logger.warning(
                             "Recovery message %s unavailable: %s",
                             message_id,
@@ -216,7 +221,7 @@ class DownloadBot:
                     )
                     continue
                 await self._enqueue_message(message, recovered=True)
-            for message_id in set(batch) - found_ids:
+            for message_id in set(batch) - found_ids - unavailable_ids:
                 await self.persistent_queue.mark_failed(
                     self.owner_id, message_id, "MissingMessage"
                 )

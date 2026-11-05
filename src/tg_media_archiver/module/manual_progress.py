@@ -50,9 +50,13 @@ class ManualProgress:
         state_path=None,
         reposition_debounce=1.0,
         reposition_max_delay=3.0,
+        visible_seconds=10,
+        settle_grace_seconds=3,
     ):
         self.owner_id = int(owner_id)
         self.refresh_seconds = refresh_seconds
+        self.visible_seconds = visible_seconds
+        self.settle_grace_seconds = settle_grace_seconds
         self.state_path = os.fspath(state_path) if state_path is not None else None
         self._state_ready = state_path is None
         self.reposition_debounce = reposition_debounce
@@ -63,11 +67,19 @@ class ManualProgress:
         self.unclassified = 0
         self.total = 0
         self.last_arrival = 0.0
+        self.last_arrival_at = 0.0
         self.panel_id = None
         self.generation = 0
         self.enabled = False
+        self.visible_until = 0.0
         self.loop_task = None
+        self._park_task = None
+        self._settle_task = None
+        self._client = None
+        self._markup = None
+        self._button = None
         self.next_edit_after = 0.0
+        self._edit_lock = asyncio.Lock()
         self._last_text = None
         self.opening = False
         self.activity_revision = 0
@@ -88,11 +100,13 @@ class ManualProgress:
             "panel_id": self.panel_id,
             "generation": self.generation,
             "enabled": self.enabled,
+            "visible_until": self.visible_until,
             "total": self.total,
             "counts": self.counts,
             "unclassified": self.unclassified,
             "pending_message_ids": [value[1] for value in self.pending.values()],
             "latest_incoming_id": self._latest_incoming_id,
+            "last_arrival_at": self.last_arrival_at,
         }
         temporary = self.state_path + ".tmp"
         try:
@@ -115,6 +129,8 @@ class ManualProgress:
         try:
             with open(self.state_path, encoding="utf-8") as stream:
                 data = json.load(stream)
+            if data.get("panel_id") is None:
+                return False
             owner_id = int(data["owner_id"])
             panel_id = int(data["panel_id"])
             generation = int(data["generation"])
@@ -149,7 +165,16 @@ class ManualProgress:
                 return False
             message_text = str(getattr(message, "text", "") or "")
             if not (
-                message_text.startswith(("📥 下载进度", "✅ 下载完成"))
+                message_text.startswith(
+                    (
+                        "📥 下载进度",
+                        "✅ 下载完成",
+                        "✅ 当前任务已结束",
+                        "⚠️ 任务已结束，部分下载失败",
+                        "当前没有下载任务。",
+                        "任务仍在进行中，如需查看进度条请点击按钮。",
+                    )
+                )
                 or ("处理进度 [" in message_text and "总计 " in message_text)
             ):
                 return False
@@ -158,7 +183,8 @@ class ManualProgress:
                 or []
             )
             if not any(
-                getattr(key, "callback_data", None) == f"mp:off:{generation}"
+                getattr(key, "callback_data", None)
+                in (f"mp:off:{generation}", f"mp:open:{generation}")
                 for row in keyboard
                 for key in row
             ):
@@ -175,19 +201,30 @@ class ManualProgress:
             self.total = total
             self.panel_id = panel_id
             self.generation = generation
-            self.enabled = bool(data["enabled"]) or bool(self.pending)
+            self.visible_until = float(data.get("visible_until", 0))
+            self.enabled = bool(data["enabled"]) and time.time() < self.visible_until
+            self._client, self._markup, self._button = client, markup, button
             self._latest_incoming_id = max(
                 int(data.get("latest_incoming_id", 0)), panel_id
             )
             self._last_text = None
-            self.last_arrival = time.monotonic()
+            persisted_arrival = float(data.get("last_arrival_at", 0))
+            if not self.pending:
+                self.last_arrival_at = persisted_arrival
+                age = max(0.0, time.time() - persisted_arrival)
+                self.last_arrival = time.monotonic() - age
             self.next_edit_after = 0.0
             self._save_state()
             if self.enabled:
                 self.loop_task = asyncio.create_task(
                     self._loop(client, markup, button, self.generation)
                 )
-            if self._latest_incoming_id > self.panel_id:
+            else:
+                self.visible_until = 0.0
+                self._request_park_update()
+                if not self.pending:
+                    self._schedule_settled_update()
+            if self.enabled and self._latest_incoming_id > self.panel_id:
                 now = time.monotonic()
                 self._first_incoming_at = now
                 self._last_incoming_at = now
@@ -200,7 +237,16 @@ class ManualProgress:
             return False
 
     def track(self, node, message):
-        if not self.pending and self.total and not self.enabled:
+        was_idle = not self.pending
+        if self._settle_task is not None:
+            self._settle_task.cancel()
+            self._settle_task = None
+        if (
+            was_idle
+            and self.total
+            and not self.enabled
+            and time.monotonic() - self.last_arrival >= self.settle_grace_seconds
+        ):
             self.recent.clear()
             self.counts = {"success": 0, "failed": 0, "skipped": 0}
             self.total = 0
@@ -217,13 +263,17 @@ class ManualProgress:
         self.pending[key] = (node, message.id, str(name))
         self.total += 1
         self.last_arrival = time.monotonic()
+        self.last_arrival_at = time.time()
         self.activity_revision += 1
         self._save_state()
+        if was_idle:
+            self._request_park_update()
 
     def snapshot(self):
         active = []
         queued = 0
         self.preparing_count = 0
+        settled = False
         download_result = get_download_result()
         for task_id, (node, message_id, name) in list(self.pending.items()):
             status = node.download_status.get(message_id)
@@ -242,6 +292,7 @@ class ManualProgress:
                 self.counts[label] += 1
                 self.recent.append((name, label))
                 del self.pending[task_id]
+                settled = True
                 continue
             started = message_id in getattr(node, "_manual_started_ids", set())
             if not started:
@@ -264,6 +315,11 @@ class ManualProgress:
             and not self.pending
             and time.monotonic() - self.last_arrival >= self.refresh_seconds
         )
+        if settled:
+            self.activity_revision += 1
+            self._save_state()
+            if not self.pending:
+                self._schedule_settled_update()
         return queued, active, finished
 
     def render(self, final=False):
@@ -272,7 +328,12 @@ class ManualProgress:
         percent = (done * 100 // self.total) if self.total else 0
         filled = min(10, (done * 10 // self.total) if self.total else 0)
         bar = "█" * filled + "░" * (10 - filled)
-        title = "✅ 下载完成" if final or finished else "📥 下载进度"
+        if final or finished:
+            title = (
+                "⚠️ 任务已结束，部分下载失败" if self.counts["failed"] else "✅ 下载完成"
+            )
+        else:
+            title = "📥 下载进度"
         lines = [
             f"<b>{title}</b>",
             f"总计 {self.total} · 排队 {queued} · 准备或等待 {self.preparing_count} · 下载中 {len(active)}",
@@ -299,37 +360,132 @@ class ManualProgress:
         generation = self.generation if generation is None else generation
         return markup([[button("关闭进度", callback_data=f"mp:off:{generation}")]])
 
+    def _parked_keyboard(self, markup, button, generation=None):
+        generation = self.generation if generation is None else generation
+        return markup(
+            [
+                [button("再次查看进度", callback_data=f"mp:open:{generation}")],
+                [button("关闭进度", callback_data=f"mp:off:{generation}")],
+            ]
+        )
+
+    def _parked_text(self):
+        self.snapshot()
+        if self.pending or (
+            self.total
+            and time.monotonic() - self.last_arrival < self.settle_grace_seconds
+        ):
+            return "任务仍在进行中，如需查看进度条请点击按钮。"
+        if not self.total:
+            return "当前没有下载任务。"
+        title = (
+            "⚠️ 任务已结束，部分下载失败"
+            if self.counts["failed"]
+            else "✅ 当前任务已结束"
+        )
+        return (
+            f"{title}\n"
+            f"成功 {self.counts['success']} · 失败 {self.counts['failed']}"
+            f" · 跳过 {self.counts['skipped']}"
+        )
+
+    def _schedule_settled_update(self):
+        if self._settle_task is not None:
+            self._settle_task.cancel()
+        self._settle_task = asyncio.create_task(self._settled_update())
+
+    async def _settled_update(self):
+        delay = self.settle_grace_seconds - (time.monotonic() - self.last_arrival)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if not self.pending:
+            self._request_park_update()
+
+    def _request_park_update(self):
+        if self.enabled or self.panel_id is None or self._client is None:
+            return
+        if self._park_task is None or self._park_task.done():
+            self._park_task = asyncio.create_task(
+                self._update_parked(
+                    self._client, self._markup, self._button, self.generation
+                )
+            )
+
+    async def _update_parked(self, client, markup, button, generation):
+        while (
+            self.panel_id is not None
+            and self.generation == generation
+            and not self.enabled
+        ):
+            revision = self.activity_revision
+            text = self._parked_text()
+            if text != self._last_text:
+                if time.monotonic() < self.next_edit_after:
+                    await asyncio.sleep(self.next_edit_after - time.monotonic())
+                    continue
+                if self.enabled or self.generation != generation:
+                    return
+                if not await self._safe_edit(
+                    client, text, self._parked_keyboard(markup, button)
+                ):
+                    if self.panel_id is None or self.generation != generation:
+                        return
+                    await asyncio.sleep(
+                        max(1.0, self.next_edit_after - time.monotonic())
+                    )
+                    continue
+            if revision == self.activity_revision or self.enabled:
+                return
+
+    async def _park(self, client, markup, button, generation):
+        if self.generation != generation or self.panel_id is None:
+            return
+        self.enabled = False
+        self.visible_until = 0.0
+        self._save_state()
+        self._park_task = asyncio.create_task(
+            self._update_parked(client, markup, button, generation)
+        )
+        await self._park_task
+
     async def _safe_edit(self, client, text, keyboard=None):
         panel_id = self.panel_id
         generation = self.generation
         if panel_id is None:
             return False
-        try:
-            await client.edit_message_text(
-                self.owner_id,
-                panel_id,
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-            )
-            if generation == self.generation and panel_id == self.panel_id:
-                self._last_text = text
-                self._save_state()
-            return True
-        except Exception as exc:
-            logger.warning("progress panel edit failed: %s", type(exc).__name__)
-            kind = _error_kind(exc)
+        async with self._edit_lock:
             if generation != self.generation or panel_id != self.panel_id:
                 return False
-            if kind == "flood":
-                self.next_edit_after = time.monotonic() + max(
-                    0, float(getattr(exc, "value", 3))
+            try:
+                await client.edit_message_text(
+                    self.owner_id,
+                    panel_id,
+                    text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
                 )
-            elif kind == "gone":
-                self.enabled = False
-                self.panel_id = None
-                self._save_state()
-            return kind == "same"
+                if generation == self.generation and panel_id == self.panel_id:
+                    self._last_text = text
+                    self._save_state()
+                return True
+            except Exception as exc:
+                logger.warning("progress panel edit failed: %s", type(exc).__name__)
+                kind = _error_kind(exc)
+                if generation != self.generation or panel_id != self.panel_id:
+                    return False
+                if kind == "flood":
+                    self.next_edit_after = time.monotonic() + max(
+                        0, float(getattr(exc, "value", 3))
+                    )
+                elif kind == "gone":
+                    self.enabled = False
+                    self.visible_until = 0.0
+                    self.panel_id = None
+                    self._save_state()
+                elif kind == "same":
+                    self._last_text = text
+                    self._save_state()
+                return kind == "same"
 
     async def _safe_delete(self, client, panel_id):
         try:
@@ -361,6 +517,7 @@ class ManualProgress:
         )
 
     async def open(self, client, markup, button):
+        self._client, self._markup, self._button = client, markup, button
         if self.enabled and self.opening:
             return
         if self.panel_id is not None:
@@ -369,27 +526,24 @@ class ManualProgress:
                 self.generation += 1
                 self.enabled = True
                 self.next_edit_after = 0.0
+            self.visible_until = time.time() + self.visible_seconds
+            self._save_state()
             reuse_generation = self.generation
-            text, finished = self.render()
-            edited = False
+            text, _ = self.render()
             if time.monotonic() >= self.next_edit_after:
-                edited = await self._safe_edit(
-                    client, text, self._keyboard(markup, button)
-                )
+                await self._safe_edit(client, text, self._keyboard(markup, button))
             if self.generation != reuse_generation:
                 return
             if self.panel_id is not None:
                 if not was_enabled:
-                    if finished and edited:
-                        self.enabled = False
-                    else:
-                        self.loop_task = asyncio.create_task(
-                            self._loop(client, markup, button, self.generation)
-                        )
+                    self.loop_task = asyncio.create_task(
+                        self._loop(client, markup, button, self.generation)
+                    )
                 return
         self.generation += 1
         token = self.generation
         self.enabled = True
+        self.visible_until = time.time() + self.visible_seconds
         self.panel_id = None
         self.opening = True
         self.next_edit_after = 0.0
@@ -407,6 +561,7 @@ class ManualProgress:
             if self.generation == token:
                 self.opening = False
                 self.enabled = False
+                self.visible_until = 0.0
             if self.generation == token and _error_kind(exc) != "flood":
                 try:
                     await client.send_message(
@@ -440,18 +595,28 @@ class ManualProgress:
 
     async def close(self, client):
         self.enabled = False
+        self.visible_until = 0.0
         self.generation += 1
         self.opening = False
         panel_id = self.panel_id
         self.panel_id = None
         self._last_text = None
         self._save_state()
+        if self._settle_task is not None:
+            self._settle_task.cancel()
+            self._settle_task = None
         if panel_id is not None:
             await self._safe_delete(client, panel_id)
 
     async def shutdown(self):
         """Stop local panel tasks while retaining the visible panel for restart."""
-        tasks = [self.loop_task, self._move_task, *self._delete_tasks]
+        tasks = [
+            self.loop_task,
+            self._move_task,
+            self._settle_task,
+            self._park_task,
+            *self._delete_tasks,
+        ]
         tasks = [task for task in tasks if task is not None and not task.done()]
         for task in tasks:
             task.cancel()
@@ -459,6 +624,8 @@ class ManualProgress:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.loop_task = None
         self._move_task = None
+        self._settle_task = None
+        self._park_task = None
         self._delete_tasks.clear()
         self._save_state()
 
@@ -476,6 +643,8 @@ class ManualProgress:
             or message_id <= 0
         ):
             return False
+        if not self.enabled or time.time() >= self.visible_until:
+            return False
         # An unopened or explicitly closed panel has no ID. During the initial
         # send, remember arrivals so a late result cannot leave the panel above.
         if self.panel_id is None and not self.opening:
@@ -487,13 +656,6 @@ class ManualProgress:
             self._first_incoming_at = now
         self._last_incoming_at = now
         self._latest_incoming_id = message_id
-        if self.panel_id is not None and not self.enabled:
-            # A completed panel is still visible until the user closes it.
-            self.enabled = True
-            self.last_arrival = now
-            self.loop_task = asyncio.create_task(
-                self._loop(client, markup, button, self.generation)
-            )
         self.activity_revision += 1
         self._save_state()
         if self.panel_id is not None and self._move_task is None:
@@ -506,7 +668,10 @@ class ManualProgress:
         delay_on_error = 1.0
         try:
             while (
-                self.panel_id is not None and self._latest_incoming_id > self.panel_id
+                self.panel_id is not None
+                and self.enabled
+                and time.time() < self.visible_until
+                and self._latest_incoming_id > self.panel_id
             ):
                 now = time.monotonic()
                 target = min(
@@ -517,9 +682,11 @@ class ManualProgress:
                 if wait:
                     await asyncio.sleep(wait)
                     continue
+                if not self.enabled or time.time() >= self.visible_until:
+                    break
                 old_id = self.panel_id
                 old_generation = self.generation
-                text, finished = self.render()
+                text, _ = self.render()
                 activity = self.activity_revision
                 try:
                     sent = await client.send_message(
@@ -540,7 +707,12 @@ class ManualProgress:
                         delay_on_error = min(60.0, delay_on_error * 2)
                     self.next_move_after = time.monotonic() + delay
                     continue
-                if old_id != self.panel_id or old_generation != self.generation:
+                if (
+                    old_id != self.panel_id
+                    or old_generation != self.generation
+                    or not self.enabled
+                    or time.time() >= self.visible_until
+                ):
                     await self._safe_delete(client, sent.id)
                     continue
                 self.generation = old_generation + 1
@@ -549,15 +721,10 @@ class ManualProgress:
                 self.next_edit_after = 0.0
                 self.next_move_after = 0.0
                 self._save_state()
-                if activity != self.activity_revision or self.pending or not finished:
-                    self.enabled = True
-                    self.loop_task = asyncio.create_task(
-                        self._loop(client, markup, button, self.generation)
-                    )
-                else:
-                    self.enabled = False
-                    self._save_state()
-                if activity != self.activity_revision:
+                self.loop_task = asyncio.create_task(
+                    self._loop(client, markup, button, self.generation)
+                )
+                if activity != self.activity_revision and self.enabled:
                     current_text, _ = self.render()
                     await self._safe_edit(
                         client, current_text, self._keyboard(markup, button)
@@ -571,24 +738,20 @@ class ManualProgress:
 
     async def _loop(self, client, markup, button, generation):
         while self.enabled and self.generation == generation:
-            await asyncio.sleep(self.refresh_seconds)
+            remaining = self.visible_until - time.time()
+            if remaining <= 0:
+                await self._park(client, markup, button, generation)
+                break
+            await asyncio.sleep(min(self.refresh_seconds, remaining))
             if not self.enabled or self.generation != generation or not self.panel_id:
                 break
-            text, finished = self.render()
+            if time.time() >= self.visible_until:
+                continue
+            text, _ = self.render()
             if time.monotonic() < self.next_edit_after:
                 continue
-            activity = self.activity_revision
-            edited = True
-            if text != self._last_text or finished:
-                edited = await self._safe_edit(
-                    client, text, self._keyboard(markup, button)
-                )
-            if generation != self.generation:
-                break
-            if finished and edited and activity == self.activity_revision:
-                self.enabled = False
-                self._save_state()
-                break
+            if text != self._last_text:
+                await self._safe_edit(client, text, self._keyboard(markup, button))
 
     async def callback(self, client, query):
         chat = getattr(getattr(query, "message", None), "chat", None)
@@ -601,10 +764,15 @@ class ManualProgress:
             )
             == "private"
             and getattr(query.message, "id", None) == self.panel_id
-            and getattr(query, "data", None) == f"mp:off:{self.generation}"
+            and getattr(query, "data", None)
+            in (f"mp:off:{self.generation}", f"mp:open:{self.generation}")
         )
         if valid:
-            await self.close(client)
+            action = str(query.data).split(":", 2)[1]
+            if action == "off":
+                await self.close(client)
+            elif not self.enabled:
+                await self.open(client, self._markup, self._button)
         try:
             if valid:
                 await query.answer()
