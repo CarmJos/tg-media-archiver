@@ -1,0 +1,37 @@
+bot:
+  help: |-
+    🤖 Telegram 媒体归档机器人
+    /start、/help — 查看说明
+    /progress — 查看当前队列（10 秒后收起，可点击按钮再次查看）
+    /progress off — 删除进度消息
+
+    请在私聊中转发图片、视频或文件。保存或确认重复后，转发消息会为双方删除。
+  command_start: 查看使用说明
+  command_help: 查看使用说明
+  command_progress: 查看或关闭下载进度
+progress:
+  running_title: "📥 下载进度"
+  success_title: "✅ 下载完成"
+  failure_title: "⚠️ 任务已结束，部分下载失败"
+  queue_stats: "总计 {total} · 排队 {queued} · 准备或等待 {preparing} · 下载中 {active}"
+  outcome_stats: "成功 {success} · 失败 {failed} · 跳过 {skipped}"
+  bar: "处理进度 [{bar}] {done}/{total} ({percent}%)"
+  total_speed: "总速度 {speed}/s"
+  file: "• {name} — {amount}, {speed}/s"
+  more_active: "另有 {count} 个文件正在下载"
+  waiting: "文件正在排队、准备或等待传输"
+  unclassified: "已处理（状态未分类）{count}"
+  close_button: "关闭进度"
+  reopen_button: "再次查看进度"
+  parked_running: "任务仍在进行中，如需查看进度条请点击按钮。"
+  parked_idle: "当前没有下载任务。"
+  parked_done: "✅ 当前任务已结束"
+  parked_failed: "⚠️ 任务已结束，部分下载失败"
+  parked_outcomes: "成功 {success} · 失败 {failed} · 跳过 {skipped}"
+  open_failed: "进度面板暂时无法打开，请稍后重试。"
+  stale_button: "此按钮已失效"
+summary:
+  success_title: "✅ 本轮下载任务已完成。"
+  failure_title: "⚠️ 本轮任务已结束，部分文件下载失败。"
+  counts: "总计 {total} · 已下载 {downloaded} · 跳过 {skipped} · 失败 {failed}"
+  legacy_unknown: "历史完成记录 {count}（原版本未区分下载与跳过）"

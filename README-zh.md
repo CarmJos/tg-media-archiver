@@ -121,6 +121,39 @@ tg-media-archiver --workdir ./data run
 | `proxy` | Telegram 客户端代理 |
 | `max_download_task`、`max_concurrent_transmissions` | 下载工作器数与 Telegram 同时传输数 |
 | `start_timeout`、`log_level` | 连接超时与日志等级 |
+| `language` | 机器人消息语言；默认 `zh_CN`，另内置 `en_US` |
+| `messages_dir` | 自定义消息目录；相对路径以 `config.yaml` 所在目录为基准，默认 `messages` |
+
+### 消息语言与自定义文案
+
+在 `config.yaml` 中设置机器人语言：
+
+```yaml
+language: zh_CN
+messages_dir: messages
+```
+
+环境变量 `TGA_LANGUAGE`、`TGA_MESSAGES_DIR` 优先于配置文件。使用 Docker Compose 时，可将它们加入服务的 `environment`：
+
+```yaml
+environment:
+  TGA_LANGUAGE: zh_CN
+  TGA_MESSAGES_DIR: /app/messages
+```
+
+内置消息文件为 [`zh_CN.yml`](src/tg_media_archiver/messages/zh_CN.yml) 和 [`en_US.yml`](src/tg_media_archiver/messages/en_US.yml)。如需调整文案，在 `config.yaml` 旁创建 `messages/<lang_code>.yml`。使用示例 Compose 挂载时，对应宿主机上的 `data/messages/zh_CN.yml`。只需填写要覆盖的键：
+
+```yaml
+progress:
+  parked_running: "正在归档，点击下方按钮查看进度。"
+  reopen_button: "查看进度"
+summary:
+  counts: "总计 {total} · 已保存 {downloaded} · 跳过 {skipped} · 失败 {failed}"
+```
+
+消息使用纯文本，并支持内置文件中列出的命名占位符。未知的键或占位符会在启动时报告错误。未填写的键沿用所选语言的内置文案。如需添加其他语言，例如 `fr_FR`，创建同名文件并设置 `language: fr_FR`，缺失的键将使用英文。
+
+修改设置或文件后重启服务。帮助、命令说明、进度面板、按钮及新生成的完成简报均使用所选语言；已生成且等待发送的简报会在重试时保留原文。
 
 ## 机器人指令
 
@@ -139,6 +172,7 @@ tg-media-archiver/
 │   ├── configure.py        # 隐藏输入配置
 │   ├── login.py            # Telegram 用户登录
 │   ├── media_downloader.py # 下载调度
+│   ├── messages/           # 内置 zh_CN.yml 与 en_US.yml 消息文件
 │   ├── module/             # 机器人、队列、去重、进度面板
 │   └── utils/              # 文件与日志工具
 ├── .doc/                 # 品牌图片与 TrueNAS 部署示例

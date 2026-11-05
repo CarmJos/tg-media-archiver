@@ -121,6 +121,39 @@ See [`config.example.yaml`](config.example.yaml) for an example. The runtime con
 | `proxy` | Proxy used by the Telegram clients |
 | `max_download_task`, `max_concurrent_transmissions` | Worker count and simultaneous Telegram transmissions |
 | `start_timeout`, `log_level` | Connection timeout and logging level |
+| `language` | Bot message language; defaults to `zh_CN`, with `en_US` also included |
+| `messages_dir` | Custom message directory, relative to `config.yaml` unless absolute; defaults to `messages` |
+
+### Message Language and Customization
+
+Set the bot language in `config.yaml`:
+
+```yaml
+language: en_US
+messages_dir: messages
+```
+
+The environment variables `TGA_LANGUAGE` and `TGA_MESSAGES_DIR` override these settings. For Docker Compose, add them under the service's `environment`:
+
+```yaml
+environment:
+  TGA_LANGUAGE: en_US
+  TGA_MESSAGES_DIR: /app/messages
+```
+
+The built-in catalogs are [`zh_CN.yml`](src/tg_media_archiver/messages/zh_CN.yml) and [`en_US.yml`](src/tg_media_archiver/messages/en_US.yml). To customize a message, create `messages/<lang_code>.yml` beside `config.yaml`. With the sample Compose mounts, this is `data/messages/en_US.yml` on the host. Only the keys you include are replaced:
+
+```yaml
+progress:
+  parked_running: "Archiving is still running. Tap below to view progress."
+  reopen_button: "Show progress"
+summary:
+  counts: "Total {total} · Saved {downloaded} · Skipped {skipped} · Failed {failed}"
+```
+
+Messages are plain text and support the named placeholders shown in the built-in catalogs. Unknown keys or placeholders are reported at startup. Missing keys use the selected built-in language. For another locale, such as `fr_FR`, provide a matching file and set `language: fr_FR`; missing keys then use English.
+
+Restart the service after changing the settings or files. Help, command descriptions, progress panels, buttons, and new completion summaries use the selected language. A completion summary already awaiting delivery keeps its original text when retried.
 
 ## Bot Commands
 
@@ -139,6 +172,7 @@ tg-media-archiver/
 │   ├── configure.py        # Hidden-input configuration
 │   ├── login.py            # Telegram user login
 │   ├── media_downloader.py # Download scheduling
+│   ├── messages/           # Built-in zh_CN.yml and en_US.yml catalogs
 │   ├── module/             # Bot, queue, deduplication, progress panel
 │   └── utils/              # File and logging utilities
 ├── .doc/                 # Branding assets and TrueNAS deployment examples

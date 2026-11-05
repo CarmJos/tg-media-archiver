@@ -85,6 +85,82 @@ def check_configuration():
     print("Hidden configuration and offline loading passed")
 
 
+def check_message_catalog(directory):
+    from ruamel.yaml import YAML
+
+    from tg_media_archiver.module.app import Application
+    from tg_media_archiver.module.messages import Messages
+
+    package = resources.files("tg_media_archiver.messages")
+    for language in ("zh_CN", "en_US"):
+        assert package.joinpath(f"{language}.yml").is_file(), (
+            f"Packaged {language} messages are missing"
+        )
+    assert Messages().text("bot.command_help") == "查看使用说明"
+    assert Messages("en_US").text("bot.command_help") == "Show help"
+
+    config = YAML().load(Path("config.yaml").read_text(encoding="utf-8"))
+    locale_root = directory / "localization"
+    locale_root.mkdir()
+    config_path = locale_root / "config.yaml"
+    config.update(language="en_US", messages_dir="messages")
+    with config_path.open("w", encoding="utf-8") as stream:
+        YAML().dump(config, stream)
+    messages_dir = locale_root / "messages"
+    messages_dir.mkdir()
+    (messages_dir / "en_US.yml").write_text(
+        'bot:\n  command_help: "English override"\n', encoding="utf-8"
+    )
+    app = Application(config_path)
+    app.load_config()
+    assert app.messages.language == "en_US"
+    assert app.messages.text("bot.command_help") == "English override"
+    assert app.messages.text("bot.command_progress") == "View download progress"
+
+    env_dir = locale_root / "env-messages"
+    env_dir.mkdir()
+    (env_dir / "zh_CN.yml").write_text(
+        'bot:\n  command_help: "Environment override"\n', encoding="utf-8"
+    )
+    with patch.dict(
+        os.environ,
+        {"TGA_LANGUAGE": "zh_CN", "TGA_MESSAGES_DIR": "env-messages"},
+    ):
+        app.load_config()
+        assert app.messages.language == "zh_CN"
+        assert app.messages.text("bot.command_help") == "Environment override"
+        assert app.messages.text("bot.command_progress") == "查看或关闭下载进度"
+
+    (messages_dir / "fr_FR.yml").write_text(
+        'bot:\n  command_help: "Aide"\n', encoding="utf-8"
+    )
+    french = Messages("fr_FR", messages_dir)
+    assert french.text("bot.command_help") == "Aide"
+    assert french.text("bot.command_progress") == "View download progress"
+
+    invalid_catalogs = (
+        'progress:\n  queue_stats: "{unknown}"\n',
+        'progress:\n  queue_stats: "{total"\n',
+        'bot:\n  nonexistent: "wrong key"\n',
+    )
+    for content in invalid_catalogs:
+        (messages_dir / "en_US.yml").write_text(content, encoding="utf-8")
+        try:
+            Messages("en_US", messages_dir)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Invalid message catalog was accepted: {content}")
+    for language in ("en-US", "fr_FR"):
+        try:
+            Messages(language, None)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Invalid or unavailable locale accepted: {language}")
+    print("Packaged bilingual messages, overrides and validation passed")
+
+
 async def check_storage(directory):
     from tg_media_archiver.module.media_dedup import MediaDedup
     from tg_media_archiver.module.persistent_queue import PersistentQueue
@@ -687,17 +763,99 @@ async def check_progress_and_effects(directory):
     print("Manual progress, panel close/move and durable cleanup passed")
 
 
+async def check_localized_chat(directory):
+    from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from tg_media_archiver.module.app import Application
+    from tg_media_archiver.module.bot import DownloadBot
+    from tg_media_archiver.module.manual_progress import ManualProgress
+    from tg_media_archiver.module.messages import Messages
+    from tg_media_archiver.module.persistent_queue import PersistentQueue
+
+    english = Messages("en_US")
+    chinese = Messages("zh_CN")
+    client = FakeTelegram()
+    app = Application("config.yaml")
+    app.load_config()
+    app.messages = english
+    app.save_path = str(directory / "localized-downloads")
+    app.log_file_path = str(directory / "localized-logs")
+    bot = DownloadBot(app, lambda *_args: None)
+    assert bot.manual_progress.messages is english
+    assert bot.persistent_queue.messages is english
+    await bot._on_help(client, SimpleNamespace(from_user=SimpleNamespace(id=1)))
+    assert "Telegram Media Archiver" in client.messages[client.next_id].text
+
+    state_path = directory / "localized-panel.json"
+    panel = ManualProgress(
+        1, messages=english, state_path=state_path, visible_seconds=60
+    )
+    assert not await panel.restore(
+        client, InlineKeyboardMarkup, InlineKeyboardButton, 999
+    )
+    node = SimpleNamespace(
+        task_id=1, chat_id=1, download_status={}, _manual_started_ids=set()
+    )
+    forwarded = SimpleNamespace(
+        id=40,
+        media=SimpleNamespace(value="video"),
+        video=SimpleNamespace(file_name="clip.mp4"),
+    )
+    panel.track(node, forwarded)
+    await panel.open(client, InlineKeyboardMarkup, InlineKeyboardButton)
+    panel_id = panel.panel_id
+    assert "Download progress" in client.messages[panel_id].text
+    assert "Close progress" in str(client.messages[panel_id].reply_markup)
+    await panel.shutdown()
+    restored = ManualProgress(
+        1, messages=chinese, state_path=state_path, visible_seconds=60
+    )
+    assert await restored.restore(
+        client, InlineKeyboardMarkup, InlineKeyboardButton, 999
+    )
+    await restored.open(client, InlineKeyboardMarkup, InlineKeyboardButton)
+    assert "下载进度" in client.messages[panel_id].text
+    await restored.close(client)
+    await restored.shutdown()
+
+    queue_dir = directory / "localized-queue"
+    queue_dir.mkdir()
+    queue_path = queue_dir / "files.db"
+    queue = PersistentQueue(queue_path, messages=english)
+    assert await queue.enqueue(1, 50, 1)
+    assert await queue.mark_done(1, 50, "downloaded")
+    assert await queue.enqueue(1, 51, 1)
+    assert await queue.mark_done(1, 51, "skipped")
+    notice = await queue.next_completion(1, quiet_seconds=0)
+    assert "Total 2 · Downloaded 1 · Skipped 1 · Failed 0" in notice["summary_text"]
+    restarted = PersistentQueue(queue_path, messages=chinese)
+    retry = await restarted.next_completion(1, quiet_seconds=0)
+    assert retry["summary_text"] == notice["summary_text"]
+    assert retry["notification_random_id"] == notice["notification_random_id"]
+    assert await restarted.ack_completion(notice["id"])
+    assert await restarted.enqueue(1, 52, 1)
+    assert await restarted.mark_done(1, 52, "downloaded")
+    chinese_notice = await restarted.next_completion(1, quiet_seconds=0)
+    assert "总计 1 · 已下载 1 · 跳过 0 · 失败 0" in chinese_notice["summary_text"]
+    print("Localized bot help, panel restore and frozen summaries passed")
+
+
 def main():
     original_cwd = Path.cwd()
-    with tempfile.TemporaryDirectory(prefix="tg-archiver-validation-") as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="tg-archiver-validation-") as temporary,
+        patch.dict(os.environ, {"TGA_LANGUAGE": "", "TGA_MESSAGES_DIR": ""}),
+    ):
         try:
             os.chdir(temporary)
             check_installation()
             check_configuration()
+            check_message_catalog(Path(temporary))
             asyncio.run(check_storage(Path(temporary)))
             asyncio.run(check_private_intake(Path(temporary)))
             asyncio.run(check_download_pipeline(Path(temporary)))
             asyncio.run(check_progress_and_effects(Path(temporary)))
+            asyncio.run(check_localized_chat(Path(temporary)))
         finally:
             os.chdir(original_cwd)
     print("Offline validation passed; Telegram was not contacted")

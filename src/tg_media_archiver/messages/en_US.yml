@@ -1,0 +1,37 @@
+bot:
+  help: |-
+    🤖 Telegram Media Archiver
+    /start, /help — Show help
+    /progress — View the current queue (collapses after 10 seconds; tap the button to reopen)
+    /progress off — Delete the progress message
+
+    Forward photos, videos, or files in this private chat. Once saved or confirmed as a duplicate, the forwarded message is deleted for both sides.
+  command_start: Show help
+  command_help: Show help
+  command_progress: View download progress
+progress:
+  running_title: "📥 Download progress"
+  success_title: "✅ Downloads complete"
+  failure_title: "⚠️ Finished with download failures"
+  queue_stats: "Total {total} · Queued {queued} · Preparing or waiting {preparing} · Downloading {active}"
+  outcome_stats: "Downloaded {success} · Failed {failed} · Skipped {skipped}"
+  bar: "Progress [{bar}] {done}/{total} ({percent}%)"
+  total_speed: "Total speed {speed}/s"
+  file: "• {name} — {amount}, {speed}/s"
+  more_active: "{count} more files downloading"
+  waiting: "Files are queued, preparing, or waiting for transfer"
+  unclassified: "Processed (status unknown): {count}"
+  close_button: "Close progress"
+  reopen_button: "View progress again"
+  parked_running: "The task is still running. Tap the button to view progress."
+  parked_idle: "No downloads are in progress."
+  parked_done: "✅ Current task finished"
+  parked_failed: "⚠️ Finished with download failures"
+  parked_outcomes: "Downloaded {success} · Failed {failed} · Skipped {skipped}"
+  open_failed: "The progress panel is temporarily unavailable. Please try again later."
+  stale_button: "This button has expired"
+summary:
+  success_title: "✅ This batch is complete."
+  failure_title: "⚠️ This batch finished with download failures."
+  counts: "Total {total} · Downloaded {downloaded} · Skipped {skipped} · Failed {failed}"
+  legacy_unknown: "{count} completed items from the previous version (downloaded versus skipped unknown)"
