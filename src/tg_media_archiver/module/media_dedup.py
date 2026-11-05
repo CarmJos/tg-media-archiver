@@ -33,6 +33,11 @@ class MediaDedup:
             return None
         return (str(kind), str(file_unique_id), int(media_size or 0))
 
+    @staticmethod
+    def _sqlite_integer(value):
+        value = int(value)
+        return value - (1 << 64) if value >= (1 << 63) else value
+
     @asynccontextmanager
     async def lock_for(self, key):
         """Reference-counted in-process lock; all waiters share the same lock."""
@@ -98,7 +103,7 @@ class MediaDedup:
             ):
                 return None
             name = os.path.basename(path)
-            if path == self.db_path or name.startswith("files.db-"):
+            if name == "files.db" or name.startswith("files.db-"):
                 return None
             if name.startswith(".tdl-") and name.endswith(".part"):
                 return None
@@ -108,14 +113,14 @@ class MediaDedup:
         except (OSError, ValueError):
             return None
         return (
-            int(info.st_dev),
-            int(info.st_ino),
+            self._sqlite_integer(info.st_dev),
+            self._sqlite_integer(info.st_ino),
             int(info.st_size),
             int(info.st_mtime_ns),
             int(info.st_ctime_ns),
         )
 
-    def _hash_file(self, path):
+    def _hash_file(self, path, stop=None):
         before = self._signature(path)
         if before is None:
             return None
@@ -125,6 +130,8 @@ class MediaDedup:
             descriptor = os.open(path, flags)
             with os.fdopen(descriptor, "rb") as stream:
                 while True:
+                    if stop is not None and stop.is_set():
+                        return None
                     chunk = stream.read(1024 * 1024)
                     if not chunk:
                         break
@@ -162,10 +169,7 @@ class MediaDedup:
                 signature[4],
             ),
         )
-        # An external edit must never silently bind an identity to the new bytes.
-        connection.execute(
-            "DELETE FROM identities WHERE path=? AND sha256<>?", (path, sha256)
-        )
+        # Keep old identities so a verified copy at another path can satisfy them.
 
     def _verified_digest(self, connection, path):
         path = os.path.abspath(os.fspath(path))
@@ -193,6 +197,80 @@ class MediaDedup:
                 return path
         return None
 
+    def _refresh_index_sync(self, stop):
+        """Reconcile files added, moved, changed, or removed outside the bot."""
+        counts = {"indexed": 0, "unchanged": 0, "removed": 0, "errors": 0}
+        connection = self._connect()
+        try:
+            previous = {
+                row["path"] for row in connection.execute("SELECT path FROM files")
+            }
+            visited = set()
+
+            def on_error(_error):
+                counts["errors"] += 1
+
+            for directory, names, filenames in os.walk(
+                self.root, topdown=True, followlinks=False, onerror=on_error
+            ):
+                if stop.is_set():
+                    break
+                names[:] = [
+                    name
+                    for name in names
+                    if not os.path.islink(os.path.join(directory, name))
+                ]
+                for name in filenames:
+                    if stop.is_set():
+                        break
+                    path = os.path.join(directory, name)
+                    signature = self._signature(path)
+                    if signature is None:
+                        continue
+                    visited.add(path)
+                    row = connection.execute(
+                        "SELECT * FROM files WHERE path=?", (path,)
+                    ).fetchone()
+                    if row is not None and self._row_signature(row) == signature:
+                        counts["unchanged"] += 1
+                        continue
+                    hashed = self._hash_file(path, stop)
+                    if hashed is None:
+                        if not stop.is_set():
+                            counts["errors"] += 1
+                        continue
+                    digest, hashed_signature = hashed
+                    if self._signature(path) != hashed_signature:
+                        counts["errors"] += 1
+                        continue
+                    with connection:
+                        self._upsert_file(connection, path, digest, hashed_signature)
+                    counts["indexed"] += 1
+
+            if not stop.is_set():
+                for path in previous - visited:
+                    if self._signature(path) is not None:
+                        continue
+                    with connection:
+                        counts["removed"] += connection.execute(
+                            "DELETE FROM files WHERE path=?", (path,)
+                        ).rowcount
+            return counts
+        finally:
+            connection.close()
+
+    async def refresh_index(self):
+        """Scan in a worker thread; cancellation stops between file chunks."""
+        stop = threading.Event()
+        try:
+            return await asyncio.to_thread(self._refresh_index_sync, stop)
+        except asyncio.CancelledError:
+            stop.set()
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            logger.warning("media dedup refresh unavailable: %s", type(exc).__name__)
+            return {"indexed": 0, "unchanged": 0, "removed": 0, "errors": 1}
+
     def _find_identity_sync(self, identity):
         if identity is None:
             return None
@@ -206,7 +284,16 @@ class MediaDedup:
                 return None
             if self._verified_digest(connection, row["path"]) == row["sha256"]:
                 return row["path"]
-            return self._find_hash(connection, row["sha256"])
+            replacement = self._find_hash(connection, row["sha256"])
+            if replacement is not None:
+                with connection:
+                    connection.execute(
+                        """UPDATE identities SET path=?
+                           WHERE kind=? AND unique_id=? AND media_size=?
+                             AND sha256=? AND path=?""",
+                        (replacement, *identity, row["sha256"], row["path"]),
+                    )
+            return replacement
         finally:
             connection.close()
 
@@ -312,12 +399,28 @@ class MediaDedup:
             logger.warning("media dedup record unavailable: %s", type(exc).__name__)
             return False
 
-    async def register_existing(self, path, identity=None):
-        """Bootstrap one existing file; identity=(kind, unique_id, media_size) is optional."""
-        hashed = await self.hash_file(path)
-        if hashed is None:
+    def _register_existing_sync(self, path, identity):
+        path = os.path.abspath(os.fspath(path))
+        before = self._signature(path)
+        if before is None:
             return False
-        return await self.record(path, hashed[0], hashed[1], identity)
+        connection = self._connect()
+        try:
+            digest = self._verified_digest(connection, path)
+            signature = self._signature(path)
+        finally:
+            connection.close()
+        if digest is None or signature != before:
+            return False
+        return self._record_sync(path, digest, signature, identity)
+
+    async def register_existing(self, path, identity=None):
+        """Record an existing file and its Telegram identity when supplied."""
+        try:
+            return await asyncio.to_thread(self._register_existing_sync, path, identity)
+        except (OSError, sqlite3.Error) as exc:
+            logger.warning("media dedup record unavailable: %s", type(exc).__name__)
+            return False
 
     async def verified_path_digest(self, path):
         """Hash a target path even if the database is unavailable."""

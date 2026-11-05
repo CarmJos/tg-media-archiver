@@ -23,8 +23,10 @@ TG Media Archiver saves photos, videos, and documents forwarded by an authorized
 - **Private, authorized intake** — Only forwarded media from the signed-in owner in the bot's private chat is accepted.
 - **Persistent queue** — Unfinished jobs are stored in SQLite and recovered after a restart. An interrupted file starts downloading again from the beginning.
 - **Two-stage deduplication** — Check Telegram media identity before transfer, then compare SHA-256 after download. A duplicate is skipped only when its local file still exists and verifies. Identical content with a different Telegram identity must be downloaded before its hash can be compared.
-- **On-demand progress** — `/progress` shows queued jobs, active files, transferred bytes, and speed. While open, the panel moves below new private-chat messages.
-- **Chat cleanup** — After saving a file or verifying a duplicate, the corresponding forwarded copy is deleted from the private chat. A successful multi-item queue produces one completion notice.
+- **Archive index refresh** — At startup, reconcile moved, imported, changed, and deleted files. Unchanged files reuse their saved hashes; moved files can still match their original Telegram identity through verified content.
+- **On-demand progress** — `/progress` shows queued jobs, active files, transferred bytes, and speed for 10 seconds. It then becomes a quiet reminder with a button to reopen the live panel. While visible, the panel moves below new private-chat messages.
+- **Task summaries** — Each completed batch receives one summary with downloaded, skipped, and failed counts. Later forwards form separate batches, and a failed item does not hold the summary indefinitely.
+- **Chat cleanup** — After saving a file or verifying a duplicate, the corresponding forwarded copy is deleted from the private chat. Failed items remain available for retry.
 - **Shared-storage permissions** — Published files retain the destination directory's inherited ACL for NAS file management.
 
 ## Installation
@@ -66,6 +68,8 @@ docker compose up -d
 
 Existing deployments can keep their `config.yaml`, `sessions/`, and download directory with `files.db`. The archiver reads the settings it still uses and recovers unfinished queue entries; removed Web, group-download, and cloud-upload settings are ignored. Interrupted file transfers restart from the beginning.
 
+Startup indexing reads new or changed local files before downloads begin. A large external import can make that first scan take longer; later scans reuse unchanged entries.
+
 ### Local Python
 
 Python 3.10 through 3.12 is supported:
@@ -100,7 +104,7 @@ The [`Validate` workflow](.github/workflows/validate.yml) builds and installs th
 
 1. Run `configure`, edit the proxy if needed, then run `login`. Files are saved under the working directory's `downloads/` by default, grouped into `year_month` folders.
 2. Start the service, send `/help` to the bot in a private chat, then forward a photo, video, document, or mixed album.
-3. Send `/progress` to view the queue. Use the close button or `/progress off` to remove the panel and stop updates.
+3. Send `/progress` to view the queue for 10 seconds. Use the reminder's button to reopen it, or the close button or `/progress off` to remove the message entirely.
 
 See [`config.example.yaml`](config.example.yaml) for an example. The runtime configuration contains credentials, so keep the working directory on private storage.
 
@@ -123,7 +127,7 @@ See [`config.example.yaml`](config.example.yaml) for an example. The runtime con
 | Command | Action |
 |---|---|
 | `/start`, `/help` | Show usage |
-| `/progress` | Open or refresh the progress panel |
+| `/progress` | Show live progress for 10 seconds |
 | `/progress off` | Delete the panel and stop updates |
 
 ## Project Structure

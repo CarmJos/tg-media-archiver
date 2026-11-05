@@ -13,7 +13,10 @@ from pyrogram.errors import BadRequest, FloodWait
 
 from tg_media_archiver.module.app import Application, DownloadStatus
 from tg_media_archiver.module.bot import DownloadBot
-from tg_media_archiver.module.download_stat import update_download_status
+from tg_media_archiver.module.download_stat import (
+    get_download_result,
+    update_download_status,
+)
 from tg_media_archiver.module.media_dedup import MediaDedup
 from tg_media_archiver.module.share_files import publish_download
 from tg_media_archiver.module.telegram import file_extension
@@ -150,26 +153,46 @@ class Archiver:
     async def download_task(self, client, message, node):
         status = DownloadStatus.FailedDownload
         error = "DownloadFailed"
+        interrupted = False
         try:
             status, saved_path = await self.download_media(client, message, node)
             if not saved_path or not os.path.isfile(saved_path):
                 raise OSError("Archived file is no longer present")
             logger.info("Archived message %s: %s", message.id, status.name)
         except asyncio.CancelledError:
-            status, error = DownloadStatus.FailedDownload, "CancelledError"
+            interrupted = True
             raise
         except Exception as exc:
             status, error = DownloadStatus.FailedDownload, type(exc).__name__
             logger.error("Could not archive message %s: %s", message.id, error)
         finally:
+            if interrupted:
+                status = DownloadStatus.Downloading
+                node._manual_started_ids.discard(message.id)
+                chat_stats = get_download_result().get(node.chat_id)
+                if chat_stats is not None:
+                    chat_stats.pop(message.id, None)
+                    if not chat_stats:
+                        get_download_result().pop(node.chat_id, None)
             node.download_status[message.id] = status
             if node._persistent_queue is not None:
                 try:
-                    if status in (
+                    if interrupted:
+                        await node._persistent_queue.mark_queued(
+                            node.chat_id, message.id
+                        )
+                    elif status in (
                         DownloadStatus.SuccessDownload,
                         DownloadStatus.SkipDownload,
                     ):
-                        await node._persistent_queue.mark_done(node.chat_id, message.id)
+                        outcome = (
+                            "downloaded"
+                            if status is DownloadStatus.SuccessDownload
+                            else "skipped"
+                        )
+                        await node._persistent_queue.mark_done(
+                            node.chat_id, message.id, outcome
+                        )
                     else:
                         await node._persistent_queue.mark_failed(
                             node.chat_id, message.id, error
@@ -219,6 +242,14 @@ class Archiver:
         workers = []
         try:
             await self.bot.start()
+            index = await self.dedup.refresh_index()
+            logger.info(
+                "Archive index refreshed: indexed=%s unchanged=%s removed=%s errors=%s",
+                index["indexed"],
+                index["unchanged"],
+                index["removed"],
+                index["errors"],
+            )
             workers = [
                 asyncio.create_task(self.worker())
                 for _ in range(self.app.max_download_task)
