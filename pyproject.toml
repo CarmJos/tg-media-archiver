@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tg-media-archiver"
-version = "1.2.0"
+version = "1.2.1"
 description = "A self-hosted Telegram bot that archives forwarded media to local or NAS storage, with SHA-256 deduplication, persistent download queues, and on-demand progress."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
