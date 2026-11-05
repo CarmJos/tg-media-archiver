@@ -1,0 +1,1 @@
+"""Bundled Telegram message translations."""

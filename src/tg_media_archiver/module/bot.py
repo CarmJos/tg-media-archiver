@@ -15,13 +15,6 @@ from tg_media_archiver.module.queue_effects import QueueEffects
 from tg_media_archiver.module.telegram import ArchiveClient
 
 logger = logging.getLogger(__name__)
-HELP_TEXT = (
-    "🤖 Telegram 媒体归档机器人\n"
-    "/start、/help — 查看说明\n"
-    "/progress — 查看当前队列（10 秒后收起，可点击按钮再次查看）\n"
-    "/progress off — 删除进度消息\n\n"
-    "请在私聊中转发图片、视频或文件。保存或确认重复后，转发消息会为双方删除。"
-)
 
 
 def _is_authorized_forward(message, owner_id: int) -> bool:
@@ -47,14 +40,18 @@ class DownloadBot:
 
     def __init__(self, app, enqueue_callback):
         self.app = app
+        self.messages = app.messages
         self.owner_id = app.allowed_user_ids[0]
         self.enqueue_callback = enqueue_callback
         self.client = None
         self.manual_progress = ManualProgress(
             self.owner_id,
             state_path=Path(app.log_file_path) / "manual-progress-panel.json",
+            messages=self.messages,
         )
-        self.persistent_queue = PersistentQueue(Path(app.save_path) / "files.db")
+        self.persistent_queue = PersistentQueue(
+            Path(app.save_path) / "files.db", messages=self.messages
+        )
         self.queue_effects = None
         self.effects_task = None
         self._handlers = []
@@ -122,9 +119,10 @@ class DownloadBot:
         try:
             await self.client.set_bot_commands(
                 [
-                    types.BotCommand("start", "查看使用说明"),
-                    types.BotCommand("help", "查看使用说明"),
-                    types.BotCommand("progress", "查看或关闭下载进度"),
+                    types.BotCommand(
+                        command, self.messages.text(f"bot.command_{command}")
+                    )
+                    for command in ("start", "help", "progress")
                 ]
             )
         except Exception as exc:
@@ -291,7 +289,11 @@ class DownloadBot:
 
     async def _on_help(self, client, message) -> None:
         if message.from_user and message.from_user.id == self.owner_id:
-            await client.send_message(self.owner_id, HELP_TEXT)
+            await client.send_message(
+                self.owner_id,
+                self.messages.text("bot.help"),
+                parse_mode=enums.ParseMode.DISABLED,
+            )
 
     async def _on_progress(self, client, message) -> None:
         if not message.from_user or message.from_user.id != self.owner_id:

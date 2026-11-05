@@ -5,4 +5,5 @@ recursive-include .doc *.md *.yaml
 recursive-include .doc/images *.png
 recursive-include .github/workflows *.yml
 recursive-include .github/scripts *.py
+recursive-include src/tg_media_archiver/messages *.yml
 global-exclude __pycache__ *.py[cod] parser.out parsetab.py

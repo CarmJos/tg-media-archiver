@@ -11,6 +11,7 @@ from collections import deque
 from pyrogram.enums import ParseMode
 
 from tg_media_archiver.module.download_stat import get_download_result
+from tg_media_archiver.module.messages import Messages
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,10 @@ class ManualProgress:
         reposition_max_delay=3.0,
         visible_seconds=10,
         settle_grace_seconds=3,
+        messages=None,
     ):
         self.owner_id = int(owner_id)
+        self.messages = messages if messages is not None else Messages()
         self.refresh_seconds = refresh_seconds
         self.visible_seconds = visible_seconds
         self.settle_grace_seconds = settle_grace_seconds
@@ -161,21 +164,6 @@ class ManualProgress:
                 or getattr(chat_type, "value", chat_type) != "private"
                 or getattr(getattr(message, "from_user", None), "id", None)
                 != int(bot_id)
-            ):
-                return False
-            message_text = str(getattr(message, "text", "") or "")
-            if not (
-                message_text.startswith(
-                    (
-                        "📥 下载进度",
-                        "✅ 下载完成",
-                        "✅ 当前任务已结束",
-                        "⚠️ 任务已结束，部分下载失败",
-                        "当前没有下载任务。",
-                        "任务仍在进行中，如需查看进度条请点击按钮。",
-                    )
-                )
-                or ("处理进度 [" in message_text and "总计 " in message_text)
             ):
                 return False
             keyboard = (
@@ -322,6 +310,9 @@ class ManualProgress:
                 self._schedule_settled_update()
         return queued, active, finished
 
+    def _text(self, key, **values):
+        return html.escape(self.messages.text(key, **values), quote=False)
+
     def render(self, final=False):
         queued, active, finished = self.snapshot()
         done = sum(self.counts.values()) + self.unclassified
@@ -329,43 +320,93 @@ class ManualProgress:
         filled = min(10, (done * 10 // self.total) if self.total else 0)
         bar = "█" * filled + "░" * (10 - filled)
         if final or finished:
-            title = (
-                "⚠️ 任务已结束，部分下载失败" if self.counts["failed"] else "✅ 下载完成"
+            title_key = (
+                "progress.failure_title"
+                if self.counts["failed"]
+                else "progress.success_title"
             )
         else:
-            title = "📥 下载进度"
+            title_key = "progress.running_title"
+        title = self._text(title_key)
         lines = [
             f"<b>{title}</b>",
-            f"总计 {self.total} · 排队 {queued} · 准备或等待 {self.preparing_count} · 下载中 {len(active)}",
-            f"成功 {self.counts['success']} · 失败 {self.counts['failed']} · 跳过 {self.counts['skipped']}",
-            f"处理进度 [{bar}] {done}/{self.total} ({percent}%)",
+            self._text(
+                "progress.queue_stats",
+                total=self.total,
+                queued=queued,
+                preparing=self.preparing_count,
+                active=len(active),
+            ),
+            self._text(
+                "progress.outcome_stats",
+                success=self.counts["success"],
+                failed=self.counts["failed"],
+                skipped=self.counts["skipped"],
+            ),
+            self._text(
+                "progress.bar",
+                bar=bar,
+                done=done,
+                total=self.total,
+                percent=percent,
+            ),
         ]
         if active:
-            lines.append(f"总速度 {_bytes(sum(row[1] for row in active))}/s")
+            lines.append(
+                self._text(
+                    "progress.total_speed",
+                    speed=_bytes(sum(row[1] for row in active)),
+                )
+            )
             for name, speed, used, size in active[:5]:
                 plain_name = " ".join(os.path.basename(name).split())[:80]
-                safe_name = html.escape(plain_name, quote=False)
                 amount = f"{_bytes(used)}/{_bytes(size)}" if size else _bytes(used)
-                lines.append(f"• {safe_name} — {amount}, {_bytes(speed)}/s")
+                lines.append(
+                    self._text(
+                        "progress.file",
+                        name=plain_name,
+                        amount=amount,
+                        speed=_bytes(speed),
+                    )
+                )
             if len(active) > 5:
-                lines.append(f"另有 {len(active) - 5} 个文件正在下载")
+                lines.append(self._text("progress.more_active", count=len(active) - 5))
         elif queued or self.preparing_count:
-            lines.append("文件正在排队、准备或等待传输")
+            lines.append(self._text("progress.waiting"))
         if self.unclassified:
-            lines.append(f"已处理（状态未分类）{self.unclassified}")
+            lines.append(self._text("progress.unclassified", count=self.unclassified))
         self._save_state()
         return "\n".join(lines), finished
 
     def _keyboard(self, markup, button, generation=None):
         generation = self.generation if generation is None else generation
-        return markup([[button("关闭进度", callback_data=f"mp:off:{generation}")]])
+        return markup(
+            [
+                [
+                    button(
+                        self.messages.text("progress.close_button"),
+                        callback_data=f"mp:off:{generation}",
+                    )
+                ]
+            ]
+        )
 
     def _parked_keyboard(self, markup, button, generation=None):
         generation = self.generation if generation is None else generation
         return markup(
             [
-                [button("再次查看进度", callback_data=f"mp:open:{generation}")],
-                [button("关闭进度", callback_data=f"mp:off:{generation}")],
+                [
+                    button(
+                        self.messages.text("progress.reopen_button"),
+                        callback_data=f"mp:open:{generation}",
+                    )
+                ],
+                [
+                    button(
+                        self.messages.text("progress.close_button"),
+                        callback_data=f"mp:off:{generation}",
+                    )
+                ],
             ]
         )
 
@@ -375,18 +416,24 @@ class ManualProgress:
             self.total
             and time.monotonic() - self.last_arrival < self.settle_grace_seconds
         ):
-            return "任务仍在进行中，如需查看进度条请点击按钮。"
+            return self._text("progress.parked_running")
         if not self.total:
-            return "当前没有下载任务。"
-        title = (
-            "⚠️ 任务已结束，部分下载失败"
+            return self._text("progress.parked_idle")
+        title_key = (
+            "progress.parked_failed"
             if self.counts["failed"]
-            else "✅ 当前任务已结束"
+            else "progress.parked_done"
         )
-        return (
-            f"{title}\n"
-            f"成功 {self.counts['success']} · 失败 {self.counts['failed']}"
-            f" · 跳过 {self.counts['skipped']}"
+        return "\n".join(
+            (
+                self._text(title_key),
+                self._text(
+                    "progress.parked_outcomes",
+                    success=self.counts["success"],
+                    failed=self.counts["failed"],
+                    skipped=self.counts["skipped"],
+                ),
+            )
         )
 
     def _schedule_settled_update(self):
@@ -566,7 +613,7 @@ class ManualProgress:
                 try:
                     await client.send_message(
                         self.owner_id,
-                        "进度面板暂时无法打开，请稍后重试。",
+                        self.messages.text("progress.open_failed"),
                         parse_mode=ParseMode.DISABLED,
                     )
                 except Exception as notice_exc:
@@ -777,7 +824,7 @@ class ManualProgress:
             if valid:
                 await query.answer()
             else:
-                await query.answer("此按钮已失效")
+                await query.answer(self.messages.text("progress.stale_button"))
         except Exception:
             pass
         return bool(valid)

@@ -12,6 +12,8 @@ import sqlite3
 import threading
 import time
 
+from tg_media_archiver.module.messages import Messages
+
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z_0-9]{0,127}$")
 _BATCH_WINDOW_SECONDS = 3
 _MAX_BATCH_SPAN_SECONDS = 30
@@ -23,8 +25,9 @@ _TERMINAL_RECOVERY_ERRORS = frozenset(
 class PersistentQueue:
     """SQLite queue keyed by the Bot chat ID and message ID."""
 
-    def __init__(self, db_path):
+    def __init__(self, db_path, messages=None):
         self.db_path = os.path.abspath(os.fspath(db_path))
+        self.messages = messages if messages is not None else Messages()
         self._schema_lock = threading.Lock()
         self._ready = False
 
@@ -480,8 +483,7 @@ class PersistentQueue:
     async def ack_cleanup(self, chat_id, message_id):
         return await asyncio.to_thread(self._ack_cleanup_sync, chat_id, message_id)
 
-    @staticmethod
-    def _completion_text(connection, batch_id):
+    def _completion_text(self, connection, batch_id):
         row = connection.execute(
             """SELECT count(*) AS total,
                       sum(CASE WHEN state='done' AND outcome='downloaded' THEN 1 ELSE 0 END) AS downloaded,
@@ -498,17 +500,21 @@ class PersistentQueue:
         failed = int(row["failed"])
         if total != downloaded + skipped + unknown + failed:
             raise ValueError("Batch contains unsettled or invalid outcomes")
-        title = (
-            "⚠️ 本轮任务已结束，部分文件下载失败。"
-            if failed
-            else "✅ 本轮下载任务已完成。"
+        title = self.messages.text(
+            "summary.failure_title" if failed else "summary.success_title"
         )
         lines = [
             title,
-            f"总计 {total} · 已下载 {downloaded} · 跳过 {skipped} · 失败 {failed}",
+            self.messages.text(
+                "summary.counts",
+                total=total,
+                downloaded=downloaded,
+                skipped=skipped,
+                failed=failed,
+            ),
         ]
         if unknown:
-            lines.append(f"历史完成记录 {unknown}（原版本未区分下载与跳过）")
+            lines.append(self.messages.text("summary.legacy_unknown", count=unknown))
         return "\n".join(lines)
 
     def _next_completion_sync(self, owner_id, quiet_seconds):

@@ -22,6 +22,11 @@ max_concurrent_transmissions: 2
 start_timeout: 120
 log_level: INFO
 
+# Telegram-facing messages. TGA_LANGUAGE and TGA_MESSAGES_DIR override these.
+# Optional overrides go in messages/<language>.yml beside config.yaml.
+language: zh_CN
+messages_dir: messages
+
 # Telegram sessions use this proxy. Leave empty for a direct connection.
 proxy: {}
 # proxy:

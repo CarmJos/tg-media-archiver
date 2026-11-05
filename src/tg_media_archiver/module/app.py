@@ -1,11 +1,13 @@
 """Configuration and in-memory state for the private media archiver."""
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from tg_media_archiver.module.messages import Messages
 from tg_media_archiver.utils.format import validate_title as safe_component
 
 
@@ -57,11 +59,23 @@ class Application:
         self.max_concurrent_transmissions = 2
         self.start_timeout = 120
         self.log_level = "INFO"
+        self.messages = Messages()
 
     def load_config(self) -> None:
         config = YAML(typ="safe").load(self.config_file.read_text(encoding="utf-8"))
         if not isinstance(config, dict):
             raise TypeError("config.yaml must contain a mapping")
+
+        language = os.environ.get("TGA_LANGUAGE") or config.get("language", "zh_CN")
+        directory = os.environ.get("TGA_MESSAGES_DIR") or config.get(
+            "messages_dir", "messages"
+        )
+        if not isinstance(directory, str) or not directory.strip():
+            raise ValueError("messages_dir must be a nonempty path")
+        message_path = Path(directory).expanduser()
+        if not message_path.is_absolute():
+            message_path = self.config_file.resolve().parent / message_path
+        self.messages = Messages(language, message_path)
 
         self.api_id = int(config["api_id"])
         self.api_hash = str(config["api_hash"])
