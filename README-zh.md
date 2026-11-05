@@ -33,7 +33,7 @@ TG Media Archiver 将授权用户在机器人私聊中转发的图片、视频�
 
 ### Docker Compose
 
-GHCR 提供 `linux/amd64` 和 `linux/arm64` 镜像。示例使用正式版 `1.1.0`；也可将标签改为 `latest`，跟随最新正式版。
+GHCR 提供 `linux/amd64` 和 `linux/arm64` 镜像。示例使用正式版 `1.2.0`；也可将标签改为 `latest`，跟随最新正式版。
 
 将 [`compose.yaml`](compose.yaml) 下载到部署目录：
 
@@ -43,7 +43,7 @@ cd tg-media-archiver
 curl -fsSL https://raw.githubusercontent.com/CarmJos/tg-media-archiver/master/compose.yaml -o compose.yaml
 ```
 
-服务使用 `image: ghcr.io/carmjos/tg-media-archiver:1.1.0`。拉取镜像并配置机器人：
+服务使用 `image: ghcr.io/carmjos/tg-media-archiver:1.2.0`。拉取镜像并配置机器人：
 
 ```sh
 docker compose pull
@@ -90,7 +90,7 @@ tg-media-archiver --workdir ./data run
 
 ### 自动构建 Docker 镜像
 
-[`Docker` 工作流](.github/workflows/docker.yml) 仅在 GitHub Release 发布时构建并推送 `linux/amd64` 和 `linux/arm64` 镜像到 `ghcr.io/carmjos/tg-media-archiver`。Release `v1.1.0` 会生成 `v1.1.0`、`1.1.0` 和提交 SHA 镜像标签；正式版同时更新 `latest`，预发布版保持 `latest` 不变。推送 `main`、`master`，提交 PR 或手动运行工作流时，仅验证构建。
+[`Docker` 工作流](.github/workflows/docker.yml) 仅在 GitHub Release 发布时构建并推送 `linux/amd64` 和 `linux/arm64` 镜像到 `ghcr.io/carmjos/tg-media-archiver`。Release `v1.2.0` 会生成 `v1.2.0`、`1.2.0` 和提交 SHA 镜像标签；正式版同时更新 `latest`，预发布版保持 `latest` 不变。推送 `main`、`master`，提交 PR 或手动运行工作流时，仅验证构建。
 
 工作流使用仓库自带的 `GITHUB_TOKEN`，无需额外配置仓库密码。
 
